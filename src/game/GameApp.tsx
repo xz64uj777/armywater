@@ -104,7 +104,7 @@ export function GameApp() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewRef = useRef<View | null>(null);
   const reliefRef = useRef<Relief | null>(null);
-  const fxRef = useRef<Fx>({ phase: 0, trauma: 0, shake: true, hover: null, floaters: [], model: null, marks: [] });
+  const fxRef = useRef<Fx>({ phase: 0, trauma: 0, shake: true, hover: null, floaters: [], model: null, marks: [], storm: 0, rain: false, breach: null });
   const toolRef = useRef(tool);
   const screenRef = useRef(screen);
   const missionRef = useRef(missionById(missionId));
@@ -117,6 +117,12 @@ export function GameApp() {
   const paintRef = useRef("");
   const lookRef = useRef(true);
   const [look, setLook] = useState(true);
+  const [alert, setAlert] = useState<FightAlert | null>(null);
+  const alertRef = useRef<FightAlert | null>(null);
+  const alertSeenRef = useRef(new Set<string>());
+  const alertCoolRef = useRef(0);
+  const breachIdRef = useRef(0);
+  const seenBreachRef = useRef(new Set<string>());
   const walksRef = useRef<Record<string, boolean>>({});
   const difficultyRef = useRef<Difficulty>("easy");
   const pausedByCoach = useRef(false);
@@ -230,9 +236,22 @@ export function GameApp() {
         fx.floaters = fx.floaters.filter((f) => f.life > 0);
         if (state.breaches > breachesRef.current) {
           breachesRef.current = state.breaches;
-          fx.trauma = Math.min(1, fx.trauma + 0.62);
+          fx.trauma = Math.min(1, fx.trauma + 0.95);
           audioRef.current?.breach();
+          try {
+            navigator.vibrate?.([50, 40, 90]);
+          } catch {
+            /* unsupported */
+          }
+          const broken = state.cells.find((c) => c.wall?.breached && !seenBreachRef.current.has(`${c.x},${c.y}`));
+          if (broken) {
+            seenBreachRef.current.add(`${broken.x},${broken.y}`);
+            breachIdRef.current += 1;
+            fx.breach = { x: broken.x, y: broken.y, id: breachIdRef.current };
+          }
         }
+        fx.storm = stormLevel(state);
+        fx.rain = state.mode === "fight" && !state.paused;
         const top = state.log[0]?.text ?? "";
         if (top && top !== logRef.current) {
           logRef.current = top;
@@ -260,6 +279,7 @@ export function GameApp() {
         if (hudAt > 0.2) {
           hudAt = 0;
           setHudTick((n) => n + 1);
+          offerAlert(state);
         }
         if (state.mode === "done" && !reportedRef.current) {
           reportedRef.current = true;
@@ -346,6 +366,53 @@ export function GameApp() {
     if (spec?.kind === "tap") setTool(spec.tool);
   }
 
+  function offerAlert(state: GameState) {
+    if (state.mode !== "fight" || state.ended || coachRef.current != null || manualOpenRef.current) {
+      if (alertRef.current) {
+        alertRef.current = null;
+        setAlert(null);
+      }
+      return;
+    }
+    if (alertRef.current) {
+      if (alertResolved(state, alertRef.current)) {
+        alertSeenRef.current.add(alertRef.current.id);
+        alertRef.current = null;
+        setAlert(null);
+        alertCoolRef.current = state.t + 8;
+      }
+      return;
+    }
+    if (state.t < alertCoolRef.current) return;
+    const next = pickFightAlert(state, alertSeenRef.current);
+    if (!next) return;
+    alertRef.current = next;
+    setAlert(next);
+  }
+
+  function runAlert(next: FightAlert) {
+    const state = stateRef.current;
+    if (!state) return;
+    if (next.action === "gate") act(toggleSpill(state));
+    else if (next.action === "crew" && next.x != null && next.y != null) {
+      setTool("repair");
+      act(orderCrew(state, next.x, next.y, "repair"));
+    }
+    alertSeenRef.current.add(next.id);
+    alertRef.current = null;
+    setAlert(null);
+    alertCoolRef.current = state.t + 12;
+    setHudTick((n) => n + 1);
+  }
+
+  function dismissAlert() {
+    const state = stateRef.current;
+    if (alertRef.current) alertSeenRef.current.add(alertRef.current.id);
+    alertRef.current = null;
+    setAlert(null);
+    if (state) alertCoolRef.current = state.t + 12;
+  }
+
   function act(message: string) {
     if (!message) return;
     setStatus(message);
@@ -393,6 +460,15 @@ export function GameApp() {
     reportedRef.current = false;
     fxRef.current.model = null;
     fxRef.current.floaters = [];
+    fxRef.current.breach = null;
+    fxRef.current.storm = 0;
+    fxRef.current.rain = false;
+    alertSeenRef.current = new Set();
+    alertCoolRef.current = 0;
+    alertRef.current = null;
+    setAlert(null);
+    seenBreachRef.current = new Set();
+    breachIdRef.current = 0;
     setModel(null);
     setDebrief(null);
     setTool("levee");
@@ -422,7 +498,7 @@ export function GameApp() {
       pausedByCoach.current = true;
       goCoach(coachRef.current + 1);
     }
-    setStatus(state.paused ? "Clock is held. Read the card, then run the river." : "Flood fight is live. Watch the gauge.");
+    setStatus(state.paused ? "Clock is held. Read the card, then start the river." : "The fight is on. Watch the river gauge.");
     audioRef.current?.place();
     setHudTick((n) => n + 1);
   }
@@ -562,7 +638,7 @@ export function GameApp() {
       )}
       {screen === "manual" && <Manual onBack={() => setScreen(manualReturn)} />}
       {screen === "play" && state && (
-        <div className="flex h-dvh flex-col overflow-hidden">
+        <div className="safe-screen flex h-dvh flex-col overflow-hidden">
           <PlayHeader
             state={state}
             mission={mission}
@@ -587,32 +663,33 @@ export function GameApp() {
               role="application"
               aria-label={`${mission.district} operations map`}
             />
-            <p className="pointer-events-none absolute left-2 top-2 z-10 bg-paper/90 px-2 py-1 font-display text-xs tracking-widest text-muted">
-              {look ? "DRAG TO LOOK · TAP TO BUILD" : "DRAG TO BUILD · TWO FINGERS TO LOOK"}
-            </p>
-            <button
-              type="button"
-              className={`absolute right-24 top-2 z-10 h-9 border border-ink px-3 font-display text-sm tracking-wide ${look ? "bg-ink text-paper" : "bg-paper"}`}
-              onClick={() => {
-                const next = !look;
-                lookRef.current = next;
-                setLook(next);
-              }}
-            >
-              {look ? "Look" : "Draw"}
-            </button>
-            <button
-              type="button"
-              className="absolute right-2 top-2 z-10 h-9 border border-ink bg-paper px-3 font-display text-sm tracking-wide"
-              onClick={() => reliefRef.current?.frame()}
-            >
-              Frame
-            </button>
-            {model && (
-              <p className="pointer-events-none absolute inset-x-3 top-2 bg-paper px-2 py-1 font-display text-sm tracking-wide text-ink">
-                {model.summary}
+            <div className="absolute inset-x-2 top-2 z-10 flex items-start gap-2">
+              <p className="min-w-0 flex-1 bg-paper/90 px-2 py-1 font-display text-xs tracking-widest text-muted">
+                {model
+                  ? model.summary
+                  : look
+                    ? "DRAG TO LOOK AROUND · TAP TO BUILD"
+                    : "DRAG TO DRAW A LINE · TWO FINGERS TO LOOK AROUND"}
               </p>
-            )}
+              <button
+                type="button"
+                className={`h-11 shrink-0 border border-ink px-3 font-display text-sm tracking-wide ${look ? "bg-ink text-paper" : "bg-paper"}`}
+                onClick={() => {
+                  const next = !look;
+                  lookRef.current = next;
+                  setLook(next);
+                }}
+              >
+                {look ? "Look around" : "Draw a line"}
+              </button>
+              <button
+                type="button"
+                className="h-11 shrink-0 border border-ink bg-paper px-3 font-display text-sm tracking-wide"
+                onClick={() => reliefRef.current?.frame()}
+              >
+                Frame
+              </button>
+            </div>
             {guide && (
               <CoachCard
                 step={guide}
@@ -626,16 +703,19 @@ export function GameApp() {
                 onSkip={finishCoach}
               />
             )}
+            {alert && !guide && (
+              <AlertCard alert={alert} onAct={() => runAlert(alert)} onSkip={dismissAlert} />
+            )}
           </div>
           <footer className="shrink-0 border-t border-ink px-3 py-2">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <p className="min-w-0 flex-1 truncate font-display text-sm tracking-wide text-muted">{hoverText || status}</p>
-              <button type="button" className="shrink-0 font-display text-sm tracking-widest" onClick={openPlayManual}>
+              <button type="button" className="h-11 shrink-0 px-3 font-display text-sm tracking-widest" onClick={openPlayManual}>
                 Manual
               </button>
               <button
                 type="button"
-                className="shrink-0 font-display text-sm tracking-widest"
+                className="h-11 shrink-0 px-3 font-display text-sm tracking-widest"
                 onClick={() => {
                   const steps = walkFor(mission.id, difficulty);
                   if (state.mode === "build") goCoach(0);
@@ -663,7 +743,7 @@ export function GameApp() {
                   className={`h-12 px-3 font-display text-sm tracking-wide ${assumeSpill ? "bg-river text-foam" : "border border-ink bg-paper text-ink"}`}
                   onClick={() => setAssumeSpill((v) => !v)}
                 >
-                  {assumeSpill ? "Model: gate opens" : "Model: gate shut"}
+                  {assumeSpill ? "Forecast: overflow open" : "Forecast: overflow shut"}
                 </button>
               </div>
             )}
@@ -685,7 +765,7 @@ export function GameApp() {
                     onClick={() => act(toggleSpill(state))}
                   >
                     <Droplets className="size-5" />
-                    {state.spillOpen ? "Gate open" : "Floodway"}
+                    {state.spillOpen ? "Gate open" : "Overflow"}
                   </button>
                   <button
                     type="button"
@@ -717,7 +797,7 @@ export function GameApp() {
                 className={`flex h-14 min-w-0 basis-16 flex-col items-center justify-center border border-ink px-2 font-display text-sm tracking-wide ${guide?.kind === "button" && guide.button === "model" ? "shadow-[inset_0_0_0_3px_#9d1c1c]" : ""}`}
                 onClick={runTheModel}
               >
-                Model
+                Forecast
               </button>
             </div>
           </footer>
@@ -855,7 +935,7 @@ function PlayHeader({
         <p className="font-display text-xs tracking-widest text-muted">HOLD THE RIVER · {difficulty === "easy" ? "EASY" : "HARD"}</p>
         <h1 className="truncate font-display text-2xl leading-none">{mission.codename}</h1>
         <p className="font-display text-sm tracking-wide text-muted">
-          Civil ${Math.round(state.budget)} · Reserve ${Math.round(state.reserve)}
+          Budget ${Math.round(state.budget)} · Reserve ${Math.round(state.reserve)}
         </p>
       </div>
       <div className={`min-w-0 flex-1 pb-1 ${gaugeHot ? "shadow-[inset_0_0_0_2px_#9d1c1c]" : ""}`}>
@@ -866,13 +946,13 @@ function PlayHeader({
         <div className="relative mt-1 h-3 bg-paper-2">
           <div className="absolute inset-y-0 left-0 bg-river" style={{ width: `${state.mode === "build" ? Math.min(pct, 42) : pct}%` }} />
           <span className="absolute inset-y-0 w-0.5 bg-scarlet" style={{ left: `${floodAt}%` }} title="Flood stage" />
-          <span className="absolute inset-y-0 w-0.5 bg-ink" style={{ left: `${majorAt}%` }} title="Major stage" />
+          <span className="absolute inset-y-0 w-0.5 bg-ink" style={{ left: `${majorAt}%` }} title="High flood" />
         </div>
       </div>
       <div className="text-right">
         <p className="font-display text-xl leading-none">{state.mode === "build" ? "PLAN" : clockLabel(state)}</p>
-        <p className="font-display text-sm tracking-widest text-scarlet">{state.mode === "fight" ? limb : mission.hazard.toUpperCase()}</p>
-        <button type="button" className="mt-1 text-ink" aria-label={mute ? "Unmute" : "Mute"} onClick={onMute}>
+        <p className="font-display text-sm tracking-widest text-scarlet">{state.mode === "fight" ? limbLabel(limb) : mission.hazard.toUpperCase()}</p>
+        <button type="button" className="mt-1 inline-flex h-11 w-11 items-center justify-center text-ink" aria-label={mute ? "Unmute" : "Mute"} onClick={onMute}>
           {mute ? <VolumeX className="ml-auto size-5" /> : <Volume2 className="ml-auto size-5" />}
         </button>
       </div>
@@ -898,24 +978,24 @@ function Title({
   onManual: () => void;
 }) {
   return (
-    <main className="mx-auto grid min-h-dvh w-full max-w-6xl content-center gap-8 px-4 py-6 lg:grid-cols-2 lg:items-center lg:px-8">
+    <main className="safe-screen mx-auto grid min-h-dvh w-full max-w-6xl content-center gap-8 px-4 py-6 lg:grid-cols-2 lg:items-center lg:px-8">
       <div>
         <div className="flex items-center justify-between">
           <p className="font-display text-xs tracking-widest text-muted">DISTRICT ENGINEER · FIELD PROBLEM</p>
-          <button type="button" aria-label={mute ? "Unmute" : "Mute"} onClick={onMute} className="p-2">
+          <button type="button" aria-label={mute ? "Unmute" : "Mute"} onClick={onMute} className="inline-flex h-11 w-11 items-center justify-center">
             {mute ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
           </button>
         </div>
         <Mark className="mt-6 h-12 w-16 text-ink" />
         <h1 className="mt-3 font-display text-6xl leading-none tracking-wide sm:text-7xl">HOLD THE RIVER</h1>
         <p className="mt-4 max-w-xl text-lg leading-snug">
-          You have a civil-works budget, two engineer sections, and a river that is already out of its banks. Build the line before the crest. Then fight it.
+          You have a building budget, two work crews, and a river that is already over its banks. Build your defenses before the water peaks. Then hold the line.
         </p>
         <p className="mt-4 max-w-xl border-l-2 border-scarlet pl-3 text-base leading-snug">
-          Levees on the bank. A pump in the bowl. The floodway is a decision, not a decoration.
+          Levees on the bank. A pump in the low ground behind them. The overflow gate is a choice, not decoration.
         </p>
         <button type="button" onClick={onManual} className="mt-5 h-12 border border-ink px-4 font-display text-lg tracking-wide">
-          How to fight
+          How to play
         </button>
       </div>
       <div className="flex flex-col gap-3">
@@ -939,8 +1019,8 @@ function Title({
         </div>
         <p className="text-sm leading-snug text-muted">
           {difficulty === "easy"
-            ? "Lower crest. A shorter line holds, and the floodway stays shut."
-            : "Full crest. Oxbow and Port Amity fail unless the floodway runs across the peak."}
+            ? "A lower flood. A shorter line holds, and you can leave the overflow gate shut."
+            : "A full flood. On Oxbow and Port Amity you must open the overflow gate at the peak, or the towns fail."}
         </p>
         {MISSIONS.map((m) => (
           <button
@@ -979,8 +1059,8 @@ function Brief({
   onManual: () => void;
 }) {
   return (
-    <main className="mx-auto flex min-h-dvh max-w-2xl flex-col px-4 py-6">
-      <button type="button" onClick={onBack} className="self-start font-display text-sm tracking-widest text-muted">
+    <main className="safe-screen mx-auto flex min-h-dvh max-w-2xl flex-col px-4 py-6">
+      <button type="button" onClick={onBack} className="inline-flex h-11 items-center self-start font-display text-sm tracking-widest text-muted">
         ← District desk
       </button>
       <p className="mt-6 font-display text-xs tracking-widest text-scarlet">
@@ -993,8 +1073,8 @@ function Brief({
       <p className="mt-5 text-lg leading-snug">{mission.briefing}</p>
       <p className="mt-3 border-l-2 border-scarlet pl-3 text-base leading-snug">
         {difficulty === "easy"
-          ? "Easy freshet. The crest is lower, and the walkthrough stakes the short line."
-          : "Hard crest. The walkthrough stakes the line that holds this storm, including the floodway where the crest requires it."}
+          ? "A smaller flood. The walkthrough marks the short line."
+          : "A full flood. The walkthrough marks the line that holds, including the overflow gate when you need it."}
       </p>
       <p className="mt-4 font-display text-xl tracking-wide">Objective — {mission.objective}</p>
       <ul className="mt-4 flex flex-col gap-3">
@@ -1005,10 +1085,10 @@ function Brief({
         ))}
       </ul>
       <p className="mt-4 font-display text-sm tracking-wide text-muted">
-        Civil works ${mission.budget} · Flood-fight reserve ${mission.reserve} · Levee ${COSTS.levee} · Sandbags ${COSTS.sandbag} · Pump ${COSTS.pump}
+        Budget ${mission.budget} · Emergency reserve ${mission.reserve} · Levee ${COSTS.levee} · Sandbags ${COSTS.sandbag} · Pump ${COSTS.pump}
       </p>
       <button type="button" onClick={onManual} className="mt-6 h-12 border border-ink font-display text-lg tracking-wide">
-        How to fight
+        How to play
       </button>
       <button type="button" onClick={onOpen} className="mt-2 h-14 bg-scarlet font-display text-2xl tracking-wide text-paper">
         Open the district map
@@ -1020,52 +1100,52 @@ function Brief({
 const MANUAL: { n: string; title: string; body: string }[] = [
   {
     n: "01",
-    title: "Two clocks",
-    body: "Open a district. A hand points at one cell. Tap it, then the next. Skip if you already know the line. Civil-works money only spends before Begin flood fight.",
+    title: "Two stages",
+    body: "Open a district. A hand points at one square. Tap it, then the next. Skip if you already know the line. Building money only spends before you start the flood fight.",
   },
   {
     n: "02",
     title: "Where a levee goes",
-    body: `Select Levee ($${COSTS.levee}) and tap a bank cell between the river and the town, lock, or hospital. On Millford the first banks pulse red. Sandbags ($${COSTS.sandbag}) are shorter. They blow out on a real crest. Save them for a high guide wall, not the town bank.`,
+    body: `Select Levee ($${COSTS.levee}) and tap a bank square between the river and the town, lock, or hospital. Sandbags ($${COSTS.sandbag}) are shorter and can blow out at a high peak. Save them for the wall in front of a lock, not the town bank.`,
   },
   {
     n: "03",
-    title: "The bowl needs a pump",
-    body: `A levee stops the river and traps the rain. Select Pump ($${COSTS.pump}) and tap inside the town, the hospital, or the lock. One pump can drain a connected pair of town cells. Pull refunds a mistake back into the civil budget.`,
+    title: "Low ground needs a pump",
+    body: `A levee stops the river and traps the rain. Select Pump ($${COSTS.pump}) and tap inside the town, the hospital, or the lock. One pump can drain a connected pair of town squares. Pull refunds a mistake back into the building budget.`,
   },
   {
     n: "04",
-    title: "Ask the model",
-    body: "Model runs your current line through the storm. Model: gate opens assumes you open the floodway across the crest. If it names a town, a lock, or a hospital, change the plan before you start.",
+    title: "Check the forecast",
+    body: "Forecast runs your current line through the storm. Forecast: overflow open assumes you open the overflow gate at the peak. If it names a town, a lock, or a hospital, change the plan before you start.",
   },
   {
     n: "05",
     title: "During the fight",
-    body: `Watch the gauge. The scarlet tick is flood stage. The black tick is major. Repair sends the nearest section to a breach or a drowned pump. Bags ($${COSTS.emergency} from the reserve) throws an emergency line on an empty bank. They need a dry route. Hold pauses. 2× runs the clock faster.`,
+    body: `Watch the river gauge. The red mark is flood stage. The black mark is high flood. Repair sends the nearest crew to a break or a drowned pump. Bags ($${COSTS.emergency} from the reserve) throws an emergency line on an empty bank. They need a dry path. Hold pauses. 2× runs the clock faster.`,
   },
   {
     n: "06",
-    title: "The floodway",
-    body: "The gate dumps the river into the lower fields. Open it when the gauge goes major, and shut it once the limb says FALLING. Leave it open the whole fight and the grade drops. On Millford a built line should not need it. On Oxbow and Port Amity, a shut gate lets the crest over the levees.",
+    title: "The overflow gate",
+    body: "The gate dumps the river into the lower fields. Open it when the gauge hits the black high-flood mark, and shut it once the label says GOING DOWN. Leave it open the whole fight and the grade drops. On Millford a built line should not need it. On Oxbow and Port Amity, a shut gate lets the peak over the levees.",
   },
   {
     n: "07",
     title: "The grade",
-    body: "A means the critical works stayed dry and you did not waste the basin. B means you held, but the fields or a gate left open too long paid for it. Losing the town, the lock, or the hospital is C, D, or F. Grades stay on the desk.",
+    body: "A means the town, lock, and hospital stayed dry and you did not flood the fields for too long. B means you held, but the fields or a gate left open too long paid for it. Losing the town, the lock, or the hospital is C, D, or F. Grades stay on this screen.",
   },
 ];
 
 function Manual({ onBack, overlay }: { onBack: () => void; overlay?: boolean }) {
   return (
-    <div className={overlay ? "absolute inset-0 z-20 overflow-y-auto bg-paper" : "min-h-dvh overflow-y-auto bg-paper"}>
+    <div className={overlay ? "safe-screen absolute inset-0 z-20 overflow-y-auto bg-paper" : "safe-screen min-h-dvh overflow-y-auto bg-paper"}>
       <main className="mx-auto flex max-w-2xl flex-col px-4 py-6">
-        <button type="button" onClick={onBack} className="self-start font-display text-sm tracking-widest text-muted">
+        <button type="button" onClick={onBack} className="inline-flex h-11 items-center self-start font-display text-sm tracking-widest text-muted">
           {overlay ? "← Back to the map" : "← Back"}
         </button>
-        <p className="mt-6 font-display text-xs tracking-widest text-scarlet">FIELD MANUAL</p>
-        <h1 className="mt-1 font-display text-5xl leading-none tracking-wide">HOW TO FIGHT</h1>
+        <p className="mt-6 font-display text-xs tracking-widest text-scarlet">HOW TO PLAY</p>
+        <h1 className="mt-1 font-display text-5xl leading-none tracking-wide">HOLD THE LINE</h1>
         <p className="mt-4 text-lg leading-snug">
-          You are the district engineer. The river does not care about the budget. The grade cares about who stayed dry.
+          You are in charge of the district. The river does not care about the budget. Your grade depends on who stayed dry.
         </p>
         <ol className="mt-6 flex flex-col gap-5">
           {MANUAL.map((step) => (
@@ -1077,7 +1157,7 @@ function Manual({ onBack, overlay }: { onBack: () => void; overlay?: boolean }) 
           ))}
         </ol>
         <p className="mt-6 font-display text-sm tracking-wide text-muted">
-          Keys: 1 levee or repair · 2 bags · 3 pump · 4 pull · F floodway · M model · Space pause
+          Keys: 1 levee or repair · 2 bags · 3 pump · 4 pull · F overflow · M forecast · Space pause
         </p>
         <button type="button" onClick={onBack} className="mt-6 h-14 bg-scarlet font-display text-2xl tracking-wide text-paper">
           {overlay ? "Back to the map" : "Close the manual"}
@@ -1102,7 +1182,7 @@ function Debrief({
 }) {
   const bad = card.letter === "D" || card.letter === "F" || card.letter === "C";
   return (
-    <div className="absolute inset-0 z-10 overflow-y-auto bg-paper">
+    <div className="safe-screen absolute inset-0 z-10 overflow-y-auto bg-paper">
       <div className="mx-auto flex max-w-2xl flex-col px-4 py-6">
         <p className="font-display text-xs tracking-widest text-muted">AFTER-ACTION · {mission.district.toUpperCase()}</p>
         <p className={`mt-2 font-display text-8xl leading-none ${bad ? "text-scarlet" : "text-ink"}`}>{card.letter}</p>
@@ -1114,7 +1194,7 @@ function Debrief({
         </div>
         <dl className="mt-5 grid grid-cols-2 gap-3 font-display text-sm tracking-wide sm:grid-cols-4">
           <Stat k="People dry" v={`${card.popSaved.toLocaleString()} / ${card.popTotal.toLocaleString()}`} />
-          <Stat k="Crest" v={`${card.peakFeet.toFixed(1)} ft`} />
+          <Stat k="Peak" v={`${card.peakFeet.toFixed(1)} ft`} />
           <Stat k="Breaches" v={String(card.breaches)} />
           <Stat k="Funds left" v={`$${card.budgetLeft}`} />
         </dl>
@@ -1150,3 +1230,127 @@ function Stat({ k, v }: { k: string; v: string }) {
     </div>
   );
 }
+
+type FightAlert = {
+  id: string;
+  title: string;
+  body: string;
+  action: "crew" | "gate";
+  label: string;
+  x?: number;
+  y?: number;
+};
+
+function limbLabel(limb: "RISING" | "CREST" | "FALLING" | "STANDBY"): string {
+  if (limb === "RISING") return "GOING UP";
+  if (limb === "CREST") return "AT THE PEAK";
+  if (limb === "FALLING") return "GOING DOWN";
+  return "STANDBY";
+}
+
+function stormLevel(state: GameState): number {
+  if (state.mode === "build") return 0;
+  const u = Math.min(1.35, state.t / Math.max(0.001, state.duration));
+  const peak = state.hydro.peak;
+  if (u <= peak) return 0.12 + 0.88 * (u / Math.max(0.05, peak));
+  const down = (u - peak) / Math.max(0.2, 1.15 - peak);
+  return Math.max(state.mode === "done" ? 0.1 : 0.12, 1 - down * 0.85);
+}
+
+function crewBoundFor(state: GameState, x: number, y: number): boolean {
+  return state.crews.some((c) => {
+    if (c.stranded > 0) return false;
+    if (c.task !== "repair" && c.task !== "sandbag" && c.task !== "move") return false;
+    const dest = c.path.length ? c.path[c.path.length - 1] : { x: Math.round(c.x), y: Math.round(c.y) };
+    return dest.x === x && dest.y === y;
+  });
+}
+
+function pickFightAlert(state: GameState, seen: Set<string>): FightAlert | null {
+  let worst: { x: number; y: number; label: string; breached: boolean; frac: number } | null = null;
+  for (const c of state.cells) {
+    if (!c.wall || seen.has(`wall:${c.x},${c.y}`) || crewBoundFor(state, c.x, c.y)) continue;
+    const frac = c.wall.maxHp > 0 ? c.wall.hp / c.wall.maxHp : 1;
+    if (!c.wall.breached && frac >= 0.45) continue;
+    if (!worst || (c.wall.breached ? -1 : frac) < (worst.breached ? -1 : worst.frac)) {
+      worst = { x: c.x, y: c.y, label: c.label || "this bank", breached: c.wall.breached, frac };
+    }
+  }
+  if (worst) {
+    return {
+      id: `wall:${worst.x},${worst.y}`,
+      title: worst.breached ? "Levee break" : "Levee is failing",
+      body: `${worst.label} needs a crew now.`,
+      action: "crew",
+      label: "Send a crew",
+      x: worst.x,
+      y: worst.y,
+    };
+  }
+
+  for (const c of state.cells) {
+    if (!c.pump?.flooded || seen.has(`pump:${c.x},${c.y}`) || crewBoundFor(state, c.x, c.y)) continue;
+    return {
+      id: `pump:${c.x},${c.y}`,
+      title: "Pump is underwater",
+      body: `The pump at ${c.label || "this spot"} has drowned. Send a crew to restart it.`,
+      action: "crew",
+      label: "Send a crew",
+      x: c.x,
+      y: c.y,
+    };
+  }
+
+  if (state.hitMajor && !state.spillOpen && state.cells.some((c) => c.spill) && !seen.has("major")) {
+    return {
+      id: "major",
+      title: "High flood",
+      body: "The river has reached the high mark. Open the overflow gate into the fields?",
+      action: "gate",
+      label: "Open the gate",
+    };
+  }
+  return null;
+}
+
+function alertResolved(state: GameState, alert: FightAlert): boolean {
+  if (alert.action === "gate") return state.spillOpen || !state.hitMajor;
+  if (alert.x == null || alert.y == null) return true;
+  const cell = cellAt(state, alert.x, alert.y);
+  if (!cell) return true;
+  if (crewBoundFor(state, alert.x, alert.y)) return true;
+  if (alert.id.startsWith("pump:")) return !cell.pump?.flooded;
+  if (alert.id.startsWith("wall:")) {
+    if (!cell.wall) return true;
+    if (cell.wall.breached) return false;
+    return cell.wall.hp >= cell.wall.maxHp * 0.45;
+  }
+  return false;
+}
+
+function AlertCard({
+  alert,
+  onAct,
+  onSkip,
+}: {
+  alert: FightAlert;
+  onAct: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <div className="absolute inset-x-2 bottom-2 z-10 border border-ink bg-paper p-2 sm:inset-x-auto sm:right-3 sm:bottom-3 sm:w-72">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="font-display text-xs tracking-widest text-scarlet">NOW</p>
+        <button type="button" onClick={onSkip} className="inline-flex h-11 items-center font-display text-xs tracking-widest text-muted">
+          Not now
+        </button>
+      </div>
+      <h2 className="font-display text-xl leading-none tracking-wide">{alert.title}</h2>
+      <p className="mt-1 text-sm leading-snug">{alert.body}</p>
+      <button type="button" onClick={onAct} className="mt-3 h-12 w-full bg-scarlet font-display text-lg tracking-wide text-paper">
+        {alert.label}
+      </button>
+    </div>
+  );
+}
+
