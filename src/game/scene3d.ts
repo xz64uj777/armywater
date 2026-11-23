@@ -213,6 +213,10 @@ export class Relief {
   private burstId = -1;
   private lastPhase = 0;
   private ring: THREE.Mesh;
+  private orbitLock = false;
+  private leaks: THREE.Group[] = [];
+  private plugRings: { timer: THREE.Mesh; fill: THREE.Mesh }[] = [];
+  private ndcScreen = new THREE.Vector3();
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
@@ -328,6 +332,41 @@ export class Relief {
     this.ring.rotation.x = -Math.PI / 2;
     this.ring.visible = false;
     this.scene.add(this.ring);
+
+    for (let i = 0; i < 8; i++) {
+      const g = new THREE.Group();
+      const boil = new THREE.Mesh(
+        new THREE.SphereGeometry(0.07, 8, 6),
+        new THREE.MeshStandardMaterial({ color: 0xc6a36a, roughness: 0.55, emissive: 0x7a4a18, emissiveIntensity: 0.25 }),
+      );
+      const foam = new THREE.Mesh(
+        new THREE.SphereGeometry(0.045, 6, 5),
+        new THREE.MeshBasicMaterial({ color: 0xf4f0e4, transparent: true, opacity: 0.85 }),
+      );
+      foam.position.y = 0.07;
+      foam.name = "foam";
+      g.add(boil, foam);
+      g.visible = false;
+      this.leaks.push(g);
+      this.scene.add(g);
+    }
+    for (let i = 0; i < 3; i++) {
+      const timer = new THREE.Mesh(
+        new THREE.RingGeometry(0.42, 0.56, 28),
+        new THREE.MeshBasicMaterial({ color: SCARLET, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+      );
+      timer.rotation.x = -Math.PI / 2;
+      const fill = new THREE.Mesh(
+        new THREE.RingGeometry(0.28, 0.4, 28),
+        new THREE.MeshBasicMaterial({ color: 0x1b2418, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }),
+      );
+      fill.rotation.x = -Math.PI / 2;
+      fill.position.y = 0.01;
+      timer.visible = false;
+      fill.visible = false;
+      this.scene.add(timer, fill);
+      this.plugRings.push({ timer, fill });
+    }
   }
 
   resize(w: number, h: number, dpr: number) {
@@ -345,6 +384,14 @@ export class Relief {
 
   setDragOrbit(on: boolean) {
     this.orbitDrag = on;
+  }
+
+  setOrbitLock(on: boolean) {
+    this.orbitLock = on;
+  }
+
+  pickAt(x: number, y: number) {
+    return this.pick(x, y);
   }
 
   zoom(delta: number) {
@@ -376,6 +423,7 @@ export class Relief {
       }
       return null;
     }
+    if (this.orbitLock) return this.pick(x, y);
     if (this.orbitDrag && p.moved) {
       this.azimuth -= dx * 0.008;
       this.polar = THREE.MathUtils.clamp(this.polar + dy * 0.006, 0.35, 1.2);
@@ -408,6 +456,64 @@ export class Relief {
     const x = Math.min(this.cols - 1, Math.max(0, Math.floor(point.x)));
     const y = Math.min(this.rows - 1, Math.max(0, Math.floor(point.z)));
     return { x, y };
+  }
+
+  /** Screen-space hit with a 44px target. */
+  hitNear(
+    state: GameState,
+    clientX: number,
+    clientY: number,
+    test: (cell: Cell) => boolean,
+  ): { x: number; y: number } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return null;
+    let best: { x: number; y: number } | null = null;
+    let bd = 22;
+    for (const cell of state.cells) {
+      if (!test(cell)) continue;
+      const pt = this.targetOf(cell);
+      if (!pt) continue;
+      const d = Math.hypot(pt.x - clientX, pt.y - clientY);
+      if (d < bd) {
+        bd = d;
+        best = { x: cell.x, y: cell.y };
+      }
+    }
+    return best;
+  }
+
+  private targetOf(cell: Cell): { x: number; y: number } | null {
+    const parcel = this.parcels[cell.y * this.cols + cell.x];
+    const y = parcel?.y ?? 0.25;
+    if (cell.wall?.leaked) return this.project(this.leakPos(cell, y));
+    if (cell.wall?.breaking) return this.project(new THREE.Vector3(cell.x + 0.5, y + 0.22, cell.y + 0.5));
+    if (cell.pump) return this.project(new THREE.Vector3(cell.x + 0.72, y + 0.16, cell.y + 0.72));
+    if (cell.wall) return this.project(new THREE.Vector3(cell.x + 0.5, y + 0.2, cell.y + 0.5));
+    return null;
+  }
+
+  private leakPos(cell: Cell, y: number): THREE.Vector3 {
+    const leak = cell.wall?.leaked;
+    const ox = leak?.ox ?? 0;
+    const oz = leak?.oz ?? 0.08;
+    if (Math.abs(this.wallFace(cell)) > 0.5) return new THREE.Vector3(cell.x + 0.5 + ox, y + 0.16, cell.y + 0.5 + oz);
+    return new THREE.Vector3(cell.x + 0.5 + oz, y + 0.16, cell.y + 0.5 + ox);
+  }
+
+  private wallFace(cell: Cell): number {
+    const at = (x: number, y: number) => {
+      if (x < 0 || y < 0 || x >= this.cols || y >= this.rows) return false;
+      return this.parcels[y * this.cols + x]?.cell.kind === "river";
+    };
+    if (at(cell.x, cell.y - 1) || at(cell.x, cell.y + 1)) return Math.PI / 2;
+    return 0;
+  }
+
+  private project(world: THREE.Vector3): { x: number; y: number } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    const v = this.ndcScreen.copy(world).project(this.camera);
+    if (v.z > 1) return null;
+    return { x: rect.left + (v.x * 0.5 + 0.5) * rect.width, y: rect.top + (-v.y * 0.5 + 0.5) * rect.height };
   }
 
   private ensure(state: GameState) {
@@ -714,10 +820,11 @@ export class Relief {
         parcel.wall.visible = false;
       }
       parcel.pump.visible = Boolean(cell.pump);
-      parcel.pump.position.y = y;
+      const moving = (cell.pump?.moving ?? 0) > 0;
+      parcel.pump.position.y = y + (moving ? 0.16 : 0);
       if (cell.pump) {
         const fan = parcel.pump.children[1];
-        if (!cell.pump.flooded) fan.rotation.y = fx.phase * 6;
+        if (!cell.pump.flooded && !moving) fan.rotation.y = fx.phase * 6;
         const bodyMat = (parcel.pump.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
         bodyMat.color.set(cell.pump.flooded ? 0x5c4038 : 0x2f3b34);
       }
@@ -749,11 +856,28 @@ export class Relief {
       mesh.rotation.y = fx.phase * 0.4 + crew.id;
     });
 
+    this.syncLeaks(state, fx.phase);
+    this.syncPlugs(state);
+
     const hover = fx.hover;
     const tool = fx.tool;
-    const showGhost = Boolean(hover && (tool === "levee" || tool === "sandbag" || tool === "pump"));
+    const drag = fx.pumpDrag;
+    const showGhost = Boolean(drag || (hover && (tool === "levee" || tool === "sandbag" || tool === "pump")));
     this.ghost.visible = false;
-    if (showGhost && hover) {
+    if (drag) {
+      const dest = state.cells[drag.y * state.cols + drag.x];
+      const parcel = this.parcels[drag.y * state.cols + drag.x];
+      if (dest && parcel) {
+        this.ghost.visible = true;
+        this.ghost.position.set(drag.x + 0.5, parcel.y + 0.16, drag.y + 0.5);
+        const berm = this.ghost.getObjectByName("berm") as THREE.Mesh;
+        const pump = this.ghost.getObjectByName("pump") as THREE.Mesh;
+        berm.visible = false;
+        pump.visible = true;
+        const ok = Boolean(dest.buildPump && !dest.pump);
+        (pump.material as THREE.MeshStandardMaterial).color.set(ok ? 0x2f3b34 : SCARLET);
+      }
+    } else if (showGhost && hover) {
       const cell = state.cells[hover.y * state.cols + hover.x];
       const parcel = this.parcels[hover.y * state.cols + hover.x];
       if (cell && parcel && cell.kind !== "river" && cell.kind !== "high" && cell.kind !== "upland") {
@@ -781,6 +905,53 @@ export class Relief {
       this.camera.position.x += Math.sin(fx.phase * 40) * fx.trauma * 0.12 * this.span;
       this.camera.position.y += Math.cos(fx.phase * 33) * fx.trauma * 0.05 * this.span;
     }
+  }
+
+  private syncLeaks(state: GameState, phase: number) {
+    const found: Cell[] = [];
+    for (const cell of state.cells) if (cell.wall?.leaked && !cell.wall.breached) found.push(cell);
+    this.leaks.forEach((mesh, i) => {
+      const cell = found[i];
+      if (!cell) {
+        mesh.visible = false;
+        return;
+      }
+      const parcel = this.parcels[cell.y * this.cols + cell.x];
+      const y = parcel?.y ?? 0.25;
+      const pos = this.leakPos(cell, y);
+      const bob = 0.02 + Math.abs(Math.sin(phase * 7 + cell.wall!.leaked!.id)) * 0.05;
+      mesh.visible = true;
+      mesh.position.copy(pos);
+      mesh.position.y = pos.y + bob;
+      const foam = mesh.getObjectByName("foam");
+      if (foam) foam.position.y = 0.07 + Math.sin(phase * 11 + cell.wall!.leaked!.id) * 0.03;
+    });
+  }
+
+  private syncPlugs(state: GameState) {
+    const found: Cell[] = [];
+    for (const cell of state.cells) if (cell.wall?.breaking) found.push(cell);
+    this.plugRings.forEach((ring, i) => {
+      const cell = found[i];
+      if (!cell?.wall) {
+        ring.timer.visible = false;
+        ring.fill.visible = false;
+        return;
+      }
+      const parcel = this.parcels[cell.y * this.cols + cell.x];
+      const y = (parcel?.y ?? 0.25) + 0.08;
+      const left = cell.wall.breakMax ? (cell.wall.breaking ?? 0) / cell.wall.breakMax : 0;
+      const work = cell.wall.plugWork ?? 0;
+      ring.timer.visible = true;
+      ring.fill.visible = true;
+      ring.timer.position.set(cell.x + 0.5, y, cell.y + 0.5);
+      ring.fill.position.set(cell.x + 0.5, y + 0.01, cell.y + 0.5);
+      const pulse = 0.92 + (1 - left) * 0.18;
+      ring.timer.scale.setScalar(pulse);
+      (ring.timer.material as THREE.MeshBasicMaterial).opacity = 0.45 + left * 0.5;
+      ring.fill.scale.setScalar(0.35 + work * 0.9);
+      (ring.fill.material as THREE.MeshBasicMaterial).opacity = 0.35 + work * 0.6;
+    });
   }
 
   private applySky(storm: number) {

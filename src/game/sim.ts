@@ -10,17 +10,31 @@ export type WallKind = "levee" | "sandbag";
 export type Mode = "build" | "fight" | "done";
 export type CrewTask = "idle" | "move" | "repair" | "sandbag";
 
+export interface Leak {
+  id: number;
+  ox: number;
+  oz: number;
+}
+
 export interface Wall {
   kind: WallKind;
   hp: number;
   maxHp: number;
   height: number;
   breached: boolean;
+  leaked?: Leak | null;
+  leakCool?: number;
+  /** Seconds left to plug a starting break. 0 or unset = not breaking. */
+  breaking?: number;
+  breakMax?: number;
+  plugWork?: number;
 }
 
 export interface Pump {
   flooded: boolean;
   alarmed: boolean;
+  /** Seconds left before a mid-fight move finishes. 0 or unset = pumping. */
+  moving?: number;
 }
 
 export interface Cell {
@@ -92,9 +106,28 @@ export interface GameState {
   hitMajor: boolean;
   hitCrest: boolean;
   peakDepth: number;
+  /** Forecast and other no-player runs. Skips leaks and the plug window. */
+  headless?: boolean;
+  leakSeq?: number;
+  lastLeakAt?: number;
 }
 
 export const COSTS = { levee: 80, sandbag: 26, pump: 60, emergency: 22 } as const;
+
+/** Mid-fight attention actions. Forecast runs skip leaks and the plug window. */
+export const FIGHT = {
+  leakFrac: 0.72,
+  leakDmg: 4,
+  leakCool: 16,
+  leakGap: 7,
+  leakAfter: 10,
+  breakTime: 5,
+  plugTaps: 6,
+  plugHold: 1.15,
+  pumpPress: 0.4,
+  pumpMove: 2.6,
+  weakFrac: 0.45,
+} as const;
 
 const LEVEE = { height: 2.45, hp: 170 };
 const SANDBAG = { height: 1.25, hp: 70 };
@@ -586,8 +619,20 @@ export function startFight(state: GameState) {
     c.failed = false;
     c.alarmed = false;
     c.peak = c.kind === "river" ? c.water : 0;
-    if (c.pump) c.pump.flooded = false;
+    if (c.pump) {
+      c.pump.flooded = false;
+      c.pump.moving = 0;
+    }
+    if (c.wall) {
+      c.wall.leaked = null;
+      c.wall.leakCool = 0;
+      c.wall.breaking = 0;
+      c.wall.breakMax = 0;
+      c.wall.plugWork = 0;
+    }
   }
+  state.leakSeq = 0;
+  state.lastLeakAt = 0;
   const depot = state.cells.find((c) => c.kind === "depot");
   for (const crew of state.crews) {
     crew.task = "idle";
@@ -600,7 +645,7 @@ export function startFight(state: GameState) {
     }
   }
   state.log = [];
-  pushLog(state, "The fight is on. Watch the river gauge.");
+  pushLog(state, "The fight is on. Tap leaks and weak walls. Plug a breaking wall. Drag a pump to move it.");
 }
 
 function gateBlocks(a: Cell, b: Cell, state: GameState): boolean {
@@ -746,7 +791,7 @@ function seepage(state: GameState, dt: number) {
 
 function pumps(state: GameState, dt: number) {
   for (const c of state.cells) {
-    if (!c.pump || c.pump.flooded) continue;
+    if (!c.pump || c.pump.flooded || (c.pump.moving ?? 0) > 0) continue;
     if (c.water <= 0.001) continue;
     const take = Math.min(c.water, PUMP_RATE * dt);
     c.water -= take;
@@ -786,16 +831,145 @@ function erode(state: GameState, dt: number) {
         if (sat > 1.6) load += (sat - 1.6) * 0.01;
       }
     }
+    if (c.wall.breaking) continue;
     const armor = c.wall.kind === "sandbag" ? 1.55 : 1;
     c.wall.hp -= load * armor * 5.4 * dt;
-    if (c.wall.hp <= 0) {
-      c.wall.hp = 0;
-      c.wall.breached = true;
-      state.breaches += 1;
-      const what = c.wall.kind === "levee" ? "Levee breach" : "Sandbags blown out";
-      pushLog(state, `${what} at ${c.label}.`);
+    if (c.wall.hp <= 0) beginBreak(state, c);
+  }
+}
+
+function finishBreach(state: GameState, c: Cell) {
+  if (!c.wall || c.wall.breached) return;
+  c.wall.hp = 0;
+  c.wall.breached = true;
+  c.wall.breaking = 0;
+  c.wall.breakMax = 0;
+  c.wall.plugWork = 0;
+  c.wall.leaked = null;
+  state.breaches += 1;
+  const what = c.wall.kind === "levee" ? "Levee breach" : "Sandbags blown out";
+  pushLog(state, `${what} at ${c.label}.`);
+}
+
+function beginBreak(state: GameState, c: Cell) {
+  if (!c.wall || c.wall.breached) return;
+  c.wall.hp = 0;
+  c.wall.leaked = null;
+  if (state.headless) {
+    finishBreach(state, c);
+    return;
+  }
+  if (c.wall.breaking) return;
+  c.wall.breaking = FIGHT.breakTime;
+  c.wall.breakMax = FIGHT.breakTime;
+  c.wall.plugWork = 0;
+  pushLog(state, `The wall at ${c.label} is giving way. Plug it now.`);
+}
+
+function tickMoves(state: GameState, dt: number) {
+  for (const c of state.cells) {
+    if (!c.pump || !((c.pump.moving ?? 0) > 0)) continue;
+    c.pump.moving = Math.max(0, (c.pump.moving ?? 0) - dt);
+    if (c.pump.moving <= 0) {
+      c.pump.moving = 0;
+      pushLog(state, `Pump is set at ${c.label}.`);
     }
   }
+}
+
+function tickBreaks(state: GameState, dt: number) {
+  for (const c of state.cells) {
+    if (!c.wall?.breaking) continue;
+    c.wall.breaking = Math.max(0, c.wall.breaking - dt);
+    if (c.wall.breaking <= 0) finishBreach(state, c);
+  }
+}
+
+function tickLeaks(state: GameState, dt: number) {
+  for (const c of state.cells) {
+    if (!c.wall) continue;
+    if (c.wall.leakCool) c.wall.leakCool = Math.max(0, c.wall.leakCool - dt);
+    if (!c.wall.leaked || c.wall.breached || c.wall.breaking) {
+      if (c.wall.breached || c.wall.breaking) c.wall.leaked = null;
+      continue;
+    }
+    if (state.headless) continue;
+    c.wall.hp -= FIGHT.leakDmg * dt;
+    if (c.wall.hp <= 0) beginBreak(state, c);
+  }
+  if (state.headless || state.mode !== "fight") return;
+  if (state.t < FIGHT.leakAfter) return;
+  if ((state.lastLeakAt ?? 0) > 0 && state.t - (state.lastLeakAt ?? 0) < FIGHT.leakGap) return;
+  let pick: Cell | null = null;
+  let worst = 1;
+  for (const c of state.cells) {
+    const wall = c.wall;
+    if (!wall || wall.breached || wall.breaking || wall.leaked) continue;
+    if ((wall.leakCool ?? 0) > 0) continue;
+    const frac = wall.maxHp > 0 ? wall.hp / wall.maxHp : 1;
+    if (frac >= FIGHT.leakFrac) continue;
+    if (frac < worst) {
+      worst = frac;
+      pick = c;
+    }
+  }
+  if (!pick?.wall) return;
+  pick.wall.leaked = {
+    id: (state.leakSeq ?? 0) + 1,
+    ox: (Math.random() - 0.5) * 0.5,
+    oz: (Math.random() * 0.12 + 0.04) * (Math.random() < 0.5 ? 1 : -1),
+  };
+  state.leakSeq = pick.wall.leaked.id;
+  state.lastLeakAt = state.t;
+  pushLog(state, `A leak is bubbling at ${pick.label}. Tap it to sandbag it.`);
+}
+
+export function sandbagLeak(state: GameState, x: number, y: number): string {
+  if (state.mode !== "fight") return "Leaks only show up during the fight.";
+  const c = cellAt(state, x, y);
+  if (!c?.wall?.leaked) return "No leak there.";
+  c.wall.leaked = null;
+  c.wall.leakCool = FIGHT.leakCool;
+  const msg = `Leak sandbagged at ${c.label}.`;
+  pushLog(state, msg);
+  return msg;
+}
+
+export function plugBreak(state: GameState, x: number, y: number, work: number): string {
+  if (state.mode !== "fight") return "";
+  const c = cellAt(state, x, y);
+  if (!c?.wall?.breaking) return "";
+  c.wall.plugWork = Math.min(1, (c.wall.plugWork ?? 0) + work);
+  if (c.wall.plugWork < 1) return "Keep going — hold or tap to plug the break.";
+  c.wall.breaking = 0;
+  c.wall.breakMax = 0;
+  c.wall.plugWork = 0;
+  c.wall.hp = Math.max(c.wall.hp, c.wall.maxHp * 0.38);
+  c.wall.leakCool = 8;
+  const msg = `You plugged the break at ${c.label}.`;
+  pushLog(state, msg);
+  return msg;
+}
+
+export function isWeakWall(wall: Wall): boolean {
+  if (wall.breached || wall.breaking) return true;
+  return wall.maxHp > 0 && wall.hp / wall.maxHp < FIGHT.weakFrac;
+}
+
+export function movePump(state: GameState, fromX: number, fromY: number, toX: number, toY: number): string {
+  if (state.mode !== "fight") return "Pumps can be moved once the fight starts.";
+  const from = cellAt(state, fromX, fromY);
+  const to = cellAt(state, toX, toY);
+  if (!from?.pump) return "No pump there.";
+  if ((from.pump.moving ?? 0) > 0) return "That pump is already moving.";
+  if (fromX === toX && fromY === toY) return "Pump stays where it is.";
+  if (!to?.buildPump) return "Pumps only go in the low ground behind a levee — town, hospital, or lock.";
+  if (to.pump) return "A pump is already on that pad.";
+  to.pump = { flooded: from.pump.flooded, alarmed: from.pump.alarmed, moving: FIGHT.pumpMove };
+  from.pump = null;
+  const msg = `Pump is moving to ${to.label}. It will not pump until it is set.`;
+  pushLog(state, msg);
+  return msg;
 }
 
 function failures(state: GameState, dt: number) {
@@ -972,6 +1146,9 @@ export function step(state: GameState, dt: number) {
   seepage(state, dt);
   pumps(state, dt);
   erode(state, dt);
+  tickLeaks(state, dt);
+  tickBreaks(state, dt);
+  tickMoves(state, dt);
   failures(state, dt);
   tickCrews(state, dt);
   const depth = gaugeDepth(state);
@@ -1109,6 +1286,7 @@ export function scoreGame(state: GameState, mission: MissionDef): Scorecard {
 export function runModel(src: GameState, mission: MissionDef, assumeSpill: boolean): ModelReport {
   const state = structuredClone(src) as GameState;
   startFight(state);
+  state.headless = true;
   const maxWater = new Float64Array(state.cells.length);
   const dt = 1 / 20;
   const limit = state.duration * 1.12;
@@ -1155,6 +1333,7 @@ export function simulate(mission: MissionDef, plan: Plan) {
   for (const w of plan.walls) notes.push(placeWall(state, w.x, w.y, w.kind));
   for (const p of plan.pumps) notes.push(placePump(state, p.x, p.y));
   startFight(state);
+  state.headless = true;
   const dt = 1 / 30;
   while (state.mode === "fight" && state.t < state.duration + 20) {
     const u = state.t / state.duration;

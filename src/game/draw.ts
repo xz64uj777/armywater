@@ -28,6 +28,7 @@ export interface Fx {
   storm?: number;
   rain?: boolean;
   breach?: { x: number; y: number; id: number } | null;
+  pumpDrag?: { x: number; y: number } | null;
 }
 
 const INK = "#1b2418";

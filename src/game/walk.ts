@@ -95,7 +95,7 @@ const MILLFORD: WalkStep[] = [
   {
     kind: "read",
     title: "Gate stays shut",
-    body: "The red mark is flood stage. The black mark is high flood. Leave the overflow gate shut.",
+    body: "The red mark is flood stage. The black mark is high flood. Leave the overflow gate shut. Tap leaks, plug a breaking wall, or send a crew to a weak levee.",
     next: "Run the river",
     show: ["gauge"],
   },
@@ -187,7 +187,7 @@ const OXBOW: WalkStep[] = [
   {
     kind: "read",
     title: "Time the gate",
-    body: "Open the overflow gate at the black mark while it says GOING UP. Shut it when it says GOING DOWN.",
+    body: "Open the overflow gate at the black mark while it says GOING UP. Shut it when it says GOING DOWN. Tap leaks, plug a breaking wall, or send a crew to a weak levee.",
     next: "Run the river",
     show: ["gauge", "floodway"],
   },
@@ -261,7 +261,7 @@ const AMITY: WalkStep[] = [
   {
     kind: "read",
     title: "Time the gate",
-    body: "Open the overflow gate at the black mark while it says GOING UP. Shut it when it says GOING DOWN.",
+    body: "Open the overflow gate at the black mark while it says GOING UP. Shut it when it says GOING DOWN. Tap leaks, plug a breaking wall, or send a crew to a weak levee.",
     next: "Run the surge",
     show: ["gauge", "floodway"],
   },
@@ -284,7 +284,7 @@ const EASY: Record<string, WalkStep[]> = {
     {
       kind: "read",
       title: "Gate stays shut",
-      body: "This flood fits behind the town. Leave the overflow gate shut.",
+      body: "This flood fits behind the town. Leave the overflow gate shut. Tap leaks, plug a breaking wall, or send a crew to a weak levee.",
       next: "Run the river",
       show: ["gauge"],
     },
@@ -309,7 +309,7 @@ const EASY: Record<string, WalkStep[]> = {
     {
       kind: "read",
       title: "Gate stays shut",
-      body: "The peak fits behind the line. Leave the overflow gate shut.",
+      body: "The peak fits behind the line. Leave the overflow gate shut. Tap leaks, plug a breaking wall, or send a crew to a weak levee.",
       next: "Run the river",
       show: ["gauge"],
     },
@@ -332,7 +332,7 @@ const EASY: Record<string, WalkStep[]> = {
     {
       kind: "read",
       title: "Gate stays shut",
-      body: "This surge fits behind the line. Do not open the tide gate.",
+      body: "This surge fits behind the line. Leave the tide gate shut. Tap leaks, plug a breaking wall, or send a crew to a weak levee.",
       next: "Run the surge",
       show: ["gauge"],
     },
