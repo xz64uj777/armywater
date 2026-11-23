@@ -8,3 +8,5 @@ npm run dev
 ```
 
 The map opens in the browser. One finger looks around. Tap to build. Switch to Draw to drag a line along the bank.
+
+Published: https://xz64uj777.github.io/armywater/
