@@ -65,18 +65,18 @@ export type Difficulty = "easy" | "hard";
 
 const EASY_ORDERS: Record<string, string[]> = {
   millford: [
-    "Two levees on the town bank. This freshet does not reach Lock 4.",
-    "One pump inside Millford. The levee makes a bowl.",
-    "Leave the floodway shut.",
+    "Two levees on the town bank. This smaller flood does not reach Lock 4, the river lock.",
+    "One pump inside Millford. A levee traps rain behind it, so the low ground needs a pump.",
+    "Leave the overflow gate shut.",
   ],
   oxbow: [
-    "Levees on both town banks, and sandbags on the lock guide wall.",
+    "Levees on both town banks, and sandbags on the wall in front of the lock.",
     "A pump in Hartsfield and a pump in the hospital.",
-    "The gate can stay shut. The crest fits behind a full line.",
+    "The overflow gate can stay shut. The peak fits behind a full line.",
   ],
   amity: [
     "Levees in front of Port Amity and Harbor Clinic.",
-    "A pump in each bowl.",
+    "A pump in each low area behind the levees.",
     "Leave the tide gate shut. This is not the full surge.",
   ],
 };
@@ -120,15 +120,15 @@ export const MISSIONS: MissionDef[] = [
     codename: "Millford",
     district: "Blackhawk District",
     river: "Blackhawk River",
-    hazard: "Spring freshet",
-    summary: "A town in a bowl, a lock with a tow in the chamber, and a floodway you should not need.",
+    hazard: "Spring flood",
+    summary: "A town in a low spot, a river lock with a boat still inside, and an overflow gate you should not need.",
     briefing:
-      "Snow is leaving the ridges and the Blackhawk is already off its summer banks. Millford sits in a bowl behind the spoil bank. Lock 4 still has a tow in the chamber. You get one civil-works budget before the crest — then two engineer sections and a thin flood-fight reserve.",
-    objective: "Keep Millford and Lock 4 dry through the crest.",
+      "Snow is melting in the hills, and the Blackhawk is already over its banks. Millford sits in low ground. Lock 4, the river lock, still has a boat in it. Spend your building budget before the water peaks, then use two crews and a small emergency reserve to hold the line.",
+    objective: "Keep Millford and Lock 4 dry through the peak of the flood.",
     orders: [
-      "Levees go on the bank, between the river and what you are protecting.",
-      "A levee makes a bowl. Put a pump in Millford or seepage will pond until the streets fail.",
-      "The floodway dumps the river into the lower fields. If the line is built, leave the gate shut.",
+      "Put levees on the bank, between the river and what you are protecting.",
+      "A levee traps rain behind it. Put a pump in Millford or the streets will fill.",
+      "The overflow gate dumps the river into the lower fields. If your line is built, leave the gate shut.",
     ],
     rows: [
       "hhhhhhhhhh",
@@ -167,15 +167,15 @@ export const MISSIONS: MissionDef[] = [
     codename: "Oxbow",
     district: "Oxbow District",
     river: "Oxbow Reach",
-    hazard: "The floodway decision",
-    summary: "Two banks, one appropriation, and soybean fields that are also a relief valve.",
+    hazard: "The overflow decision",
+    summary: "Two banks, one budget, and soybean fields that can take the extra water.",
     briefing:
-      "Hartsfield and the county hospital face each other across the channel. The appropriation will not buy a careless line. Downstream, the old floodway is in soybeans this year. Open that gate when the gauge goes major — not from the first drop of rain, and not after the levees are already gone.",
-    objective: "Hold Hartsfield, the hospital, and Lock 7. Use the floodway for the crest, not the whole storm.",
+      "Hartsfield and the county hospital face each other across the river. The budget will not buy a careless line. Downstream, the old overflow channel runs through soybeans this year. Open that gate when the river gauge hits the high mark — not at the first rain, and not after the levees are already gone.",
+    objective: "Hold Hartsfield, the hospital, and Lock 7. Use the overflow for the peak, not the whole storm.",
     orders: [
-      "Both communities need a levee on their river bank, and each bowl needs a pump.",
-      "The lock's guide wall can take a sandbag line. A full levee there spends money the hospital needs.",
-      "Open the floodway as the crest arrives. Leave it open the entire fight and the basin pays for your caution.",
+      "Both communities need a levee on their river bank, and each low area behind a levee needs a pump.",
+      "The wall in front of the lock can take a sandbag line. A full levee there spends money the hospital needs.",
+      "Open the overflow gate as the peak arrives. Leave it open the entire fight and the fields pay for your caution.",
     ],
     rows: [
       "hhhhhhhhhhhhh",
@@ -217,12 +217,12 @@ export const MISSIONS: MissionDef[] = [
     hazard: "Storm surge",
     summary: "The outlet drowns. The gauge climbs from the bottom of the map.",
     briefing:
-      "Storm Ione is not a river flood. The surge comes up the sound, the outlet gates stop working, and Port Amity has less time than money. Build a short line, keep a pump alive, and open the tidal floodway when tailwater goes major — then get it shut once the gauge turns.",
+      "Storm Ione is not a river flood. The surge comes up the sound, the outlet gates stop working, and Port Amity has less time than money. Build a short line, keep a pump running, and open the tide overflow when water from downstream hits the high mark — then shut it once the gauge turns down.",
     objective: "Keep Port Amity and Harbor Clinic dry through the surge.",
     orders: [
-      "Tailwater rises from downstream. A pretty upstream levee does not help a drowned outlet.",
-      "Pumps die if the bowl fills over their pads. Repair them, or the town floods behind a standing levee.",
-      "The tidal floodway scars the marsh. Run it for the surge, not the whole evening.",
+      "Water rises from downstream. A levee too far upstream will not help.",
+      "Pumps die if the low ground fills over them. Repair them, or the town floods behind a standing levee.",
+      "The tide overflow scars the marsh. Run it for the surge, not the whole evening.",
     ],
     rows: [
       "hhhhhhhhhh",

@@ -9,11 +9,11 @@ export const Route = createRootRoute({
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { title: APP_NAME },
       {
         name: "description",
-        content: "A district flood-fight. Levee the banks, pump the bowl, and decide when the floodway opens.",
+        content: "A district flood fight. Build levees, pump the low ground, and decide when the overflow gate opens.",
       },
       { name: "theme-color", content: "#1b2418" },
     ],

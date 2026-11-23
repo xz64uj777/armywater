@@ -56,11 +56,11 @@ const MILLFORD: WalkStep[] = [
   {
     kind: "tap",
     title: "Lock levee",
-    body: "Guide wall in front of Lock 4.",
+    body: "The wall in front of Lock 4, the river lock.",
     x: 3,
     y: 4,
     tool: "levee",
-    place: "the guide wall in front of Lock 4",
+    place: "the wall in front of Lock 4",
   },
   {
     kind: "tap",
@@ -74,7 +74,7 @@ const MILLFORD: WalkStep[] = [
   {
     kind: "tap",
     title: "Lock pump",
-    body: "Lock 4 is its own bowl.",
+    body: "Lock 4 is its own low spot. It needs its own pump.",
     x: 4,
     y: 4,
     tool: "pump",
@@ -82,8 +82,8 @@ const MILLFORD: WalkStep[] = [
   },
   {
     kind: "button",
-    title: "Model",
-    body: "Press Model. Leave the gate shut.",
+    title: "Forecast",
+    body: "Press Forecast. Leave the overflow gate shut.",
     button: "model",
   },
   {
@@ -95,7 +95,7 @@ const MILLFORD: WalkStep[] = [
   {
     kind: "read",
     title: "Gate stays shut",
-    body: "Scarlet tick is flood. Black tick is major. Do not open the floodway.",
+    body: "The red mark is flood stage. The black mark is high flood. Leave the overflow gate shut.",
     next: "Run the river",
     show: ["gauge"],
   },
@@ -139,7 +139,7 @@ const OXBOW: WalkStep[] = [
   {
     kind: "tap",
     title: "Hospital levee",
-    body: "South bank, same bowl.",
+    body: "South bank, same low area.",
     x: 4,
     y: 2,
     tool: "levee",
@@ -148,11 +148,11 @@ const OXBOW: WalkStep[] = [
   {
     kind: "tap",
     title: "Sandbags",
-    body: "Lock guide wall. Not a full levee.",
+    body: "The wall in front of the lock. Not a full levee.",
     x: 2,
     y: 4,
     tool: "sandbag",
-    place: "the lock guide wall",
+    place: "the wall in front of the lock",
   },
   {
     kind: "tap",
@@ -174,8 +174,8 @@ const OXBOW: WalkStep[] = [
   },
   {
     kind: "button",
-    title: "Model",
-    body: "Press Model. The gate opens for the crest.",
+    title: "Forecast",
+    body: "Press Forecast. The overflow gate should open at the peak.",
     button: "model",
   },
   {
@@ -187,7 +187,7 @@ const OXBOW: WalkStep[] = [
   {
     kind: "read",
     title: "Time the gate",
-    body: "Open Floodway at the black tick while it says RISING. Shut it on FALLING.",
+    body: "Open the overflow gate at the black mark while it says GOING UP. Shut it when it says GOING DOWN.",
     next: "Run the river",
     show: ["gauge", "floodway"],
   },
@@ -248,8 +248,8 @@ const AMITY: WalkStep[] = [
   },
   {
     kind: "button",
-    title: "Model",
-    body: "Press Model. The tide gate has to open.",
+    title: "Forecast",
+    body: "Press Forecast. The tide overflow has to open.",
     button: "model",
   },
   {
@@ -261,7 +261,7 @@ const AMITY: WalkStep[] = [
   {
     kind: "read",
     title: "Time the gate",
-    body: "Open Floodway at the black tick while it says RISING. Shut it on FALLING.",
+    body: "Open the overflow gate at the black mark while it says GOING UP. Shut it when it says GOING DOWN.",
     next: "Run the surge",
     show: ["gauge", "floodway"],
   },
@@ -271,20 +271,20 @@ const EASY: Record<string, WalkStep[]> = {
   millford: [
     {
       kind: "read",
-      title: "Easy freshet",
-      body: "Lower crest. Two levees and one pump. The lock can sit.",
+      title: "Smaller flood",
+      body: "A lower peak. Two levees and one pump. The lock can sit this one out.",
       next: "Show the hand",
       show: ["river"],
     },
     { kind: "tap", title: "Levee", body: "Bank in front of Millford.", x: 3, y: 1, tool: "levee", place: "the bank in front of Millford" },
     { kind: "tap", title: "Second levee", body: "South half of Millford.", x: 3, y: 2, tool: "levee", place: "the second Millford bank" },
     { kind: "tap", title: "Town pump", body: "Inside Millford.", x: 4, y: 1, tool: "pump", place: "Millford" },
-    { kind: "button", title: "Model", body: "Press Model. Leave the gate shut.", button: "model" },
+    { kind: "button", title: "Forecast", body: "Press Forecast. Leave the overflow gate shut.", button: "model" },
     { kind: "button", title: "Start", body: "Press Begin flood fight.", button: "begin" },
     {
       kind: "read",
       title: "Gate stays shut",
-      body: "This freshet fits behind the town. Do not open the floodway.",
+      body: "This flood fits behind the town. Leave the overflow gate shut.",
       next: "Run the river",
       show: ["gauge"],
     },
@@ -293,23 +293,23 @@ const EASY: Record<string, WalkStep[]> = {
     {
       kind: "read",
       title: "Easy reach",
-      body: "Both towns, sandbags on the lock. The gate stays shut.",
+      body: "Both towns, sandbags on the lock. Leave the overflow gate shut.",
       next: "Show the hand",
       show: ["river"],
     },
     { kind: "tap", title: "Levee", body: "Hartsfield, north bank.", x: 2, y: 1, tool: "levee", place: "Hartsfield's north bank" },
     { kind: "tap", title: "Second levee", body: "Hartsfield, south bank.", x: 2, y: 2, tool: "levee", place: "Hartsfield's south bank" },
     { kind: "tap", title: "Hospital levee", body: "North bank, county hospital.", x: 4, y: 1, tool: "levee", place: "the hospital's north bank" },
-    { kind: "tap", title: "Hospital levee", body: "South bank, same bowl.", x: 4, y: 2, tool: "levee", place: "the hospital's south bank" },
-    { kind: "tap", title: "Sandbags", body: "Lock guide wall.", x: 2, y: 4, tool: "sandbag", place: "the lock guide wall" },
+    { kind: "tap", title: "Hospital levee", body: "South bank, same low area.", x: 4, y: 2, tool: "levee", place: "the hospital's south bank" },
+    { kind: "tap", title: "Sandbags", body: "The wall in front of the lock.", x: 2, y: 4, tool: "sandbag", place: "the wall in front of the lock" },
     { kind: "tap", title: "Town pump", body: "Inside Hartsfield.", x: 1, y: 1, tool: "pump", place: "Hartsfield" },
     { kind: "tap", title: "Hospital pump", body: "Inside the county hospital.", x: 5, y: 1, tool: "pump", place: "the county hospital" },
-    { kind: "button", title: "Model", body: "Press Model. Leave the gate shut.", button: "model" },
+    { kind: "button", title: "Forecast", body: "Press Forecast. Leave the overflow gate shut.", button: "model" },
     { kind: "button", title: "Start", body: "Press Begin flood fight.", button: "begin" },
     {
       kind: "read",
       title: "Gate stays shut",
-      body: "The crest fits behind the line. Do not open the floodway.",
+      body: "The peak fits behind the line. Leave the overflow gate shut.",
       next: "Run the river",
       show: ["gauge"],
     },
@@ -327,7 +327,7 @@ const EASY: Record<string, WalkStep[]> = {
     { kind: "tap", title: "Clinic levee", body: "Bank in front of Harbor Clinic.", x: 3, y: 4, tool: "levee", place: "the bank in front of Harbor Clinic" },
     { kind: "tap", title: "Town pump", body: "Inside Port Amity.", x: 2, y: 1, tool: "pump", place: "Port Amity" },
     { kind: "tap", title: "Clinic pump", body: "Inside Harbor Clinic.", x: 2, y: 4, tool: "pump", place: "Harbor Clinic" },
-    { kind: "button", title: "Model", body: "Press Model. Leave the gate shut.", button: "model" },
+    { kind: "button", title: "Forecast", body: "Press Forecast. Leave the overflow gate shut.", button: "model" },
     { kind: "button", title: "Start", body: "Press Begin flood fight.", button: "begin" },
     {
       kind: "read",

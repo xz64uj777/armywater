@@ -478,13 +478,13 @@ function pickCrew(state: GameState, x: number, y: number): Crew | null {
 }
 
 export function placeWall(state: GameState, x: number, y: number, kind: WallKind): string {
-  if (state.mode !== "build") return "Too late for a new contract. Use the sections you have.";
+  if (state.mode !== "build") return "Too late to build more. Use the crews you have.";
   const cell = cellAt(state, x, y);
   if (!cell?.buildWall) return "Levees sit on the bank, between the river and the town.";
   if (cell.wall?.kind === kind && !cell.wall.breached) return "Already on that station.";
   const cost = COSTS[kind];
   const refund = cell.wall ? COSTS[cell.wall.kind] : 0;
-  if (cost - refund > state.budget + 0.001) return "Civil-works budget can't cover that.";
+  if (cost - refund > state.budget + 0.001) return "Not enough building money for that.";
   state.budget -= cost - refund;
   const spec = kind === "levee" ? LEVEE : SANDBAG;
   cell.wall = { kind, hp: spec.hp, maxHp: spec.hp, height: spec.height, breached: false };
@@ -492,9 +492,9 @@ export function placeWall(state: GameState, x: number, y: number, kind: WallKind
 }
 
 export function placePump(state: GameState, x: number, y: number): string {
-  if (state.mode !== "build") return "Pumps are civil works. They had to be in before the crest.";
+  if (state.mode !== "build") return "Too late for a new pump. They had to be in before the fight.";
   const cell = cellAt(state, x, y);
-  if (!cell?.buildPump) return "Set the pump inside the bowl — town, hospital, or lock.";
+  if (!cell?.buildPump) return "Set the pump in the low ground behind a levee — town, hospital, or lock.";
   if (cell.pump) return "A pump is already on that pad.";
   if (state.budget < COSTS.pump) return "Not enough left for a pump.";
   state.budget -= COSTS.pump;
@@ -517,26 +517,26 @@ export function sellCell(state: GameState, x: number, y: number): string {
   }
   if (!refund) return "Nothing on that parcel to pull.";
   state.budget += refund;
-  return "Returned to the civil-works budget.";
+  return "Returned to the building budget.";
 }
 
 export function toggleSpill(state: GameState): string {
-  if (!state.cells.some((c) => c.spill)) return "This district has no floodway gate.";
-  if (state.mode === "build") return "Leave the gate shut until the fight. Open it off the gauge, not the plan.";
+  if (!state.cells.some((c) => c.spill)) return "This district has no overflow gate.";
+  if (state.mode === "build") return "Leave the gate shut until the fight. Open it from the river gauge, not the plan.";
   state.spillOpen = !state.spillOpen;
   if (state.spillOpen) {
     state.spillUsed = true;
-    const msg = "Floodway open. The lower basin is taking the river.";
+    const msg = "Overflow gate open. The lower fields are taking the river.";
     pushLog(state, msg);
     return msg;
   }
-  const msg = "Floodway gate closed.";
+  const msg = "Overflow gate closed.";
   pushLog(state, msg);
   return msg;
 }
 
 export function orderCrew(state: GameState, x: number, y: number, intent: "repair" | "sandbag"): string {
-  if (state.mode !== "fight") return "Sections roll once the fight starts.";
+  if (state.mode !== "fight") return "Crews move once the fight starts.";
   const cell = cellAt(state, x, y);
   if (!cell) return "Off the map.";
   let task = intent;
@@ -549,21 +549,21 @@ export function orderCrew(state: GameState, x: number, y: number, intent: "repai
       return "Sandbags are already up.";
     }
     if (!cell.buildWall) return "Sandbags go on a bank.";
-    if (!cell.wall && state.reserve < COSTS.emergency) return "Flood-fight reserve is spent.";
+    if (!cell.wall && state.reserve < COSTS.emergency) return "The emergency reserve is spent.";
   } else if (!needsWork(cell)) {
-    return "Nothing there needs a section.";
+    return "Nothing there needs a crew.";
   }
   const crew = pickCrew(state, x, y);
-  if (!crew) return "Both sections are stranded.";
+  if (!crew) return "Both crews are stuck.";
   const sx = Math.round(crew.x);
   const sy = Math.round(crew.y);
   const path = bfs(state, sx, sy, x, y);
-  if (!path) return "No dry route. The section can't reach that station.";
+  if (!path) return "No dry route. The crew can't reach that spot.";
   crew.path = path.slice(1);
   crew.intent = task;
   crew.work = 0;
   crew.task = crew.path.length ? "move" : task;
-  return task === "repair" ? `${crew.name} is going for the repair.` : `${crew.name} is hauling sandbags.`;
+  return task === "repair" ? `${crew.name} is going to repair.` : `${crew.name} is hauling sandbags.`;
 }
 
 export function startFight(state: GameState) {
@@ -600,7 +600,7 @@ export function startFight(state: GameState) {
     }
   }
   state.log = [];
-  pushLog(state, "Flood fight is live. Watch the gauge.");
+  pushLog(state, "The fight is on. Watch the river gauge.");
 }
 
 function gateBlocks(a: Cell, b: Cell, state: GameState): boolean {
@@ -983,11 +983,11 @@ export function step(state: GameState, dt: number) {
   }
   if (!state.hitMajor && feet >= state.majorFt) {
     state.hitMajor = true;
-    pushLog(state, "Major flood stage. This is the crest window.");
+    pushLog(state, "High flood on the gauge. This is the peak window.");
   }
   if (!state.hitCrest && u >= state.hydro.peak) {
     state.hitCrest = true;
-    pushLog(state, "The crest is at the gauge.");
+    pushLog(state, "The flood is at its highest on the gauge.");
   }
   for (const c of state.cells) c.water = Math.max(0, Math.min(14, c.water));
   state.t += dt;
@@ -1066,17 +1066,17 @@ export function scoreGame(state: GameState, mission: MissionDef): Scorecard {
   if (lostNames.length) lines.push(`${lostNames.join(" and ")} went under.`);
   else if (savedNames.length) lines.push(`${savedNames.join(", ")} stayed dry.`);
   if (frac > 0.62) {
-    lines.push("The floodway ran for most of the fight. The basin did more work than the crest required.");
+    lines.push("The overflow ran for most of the fight. The fields did more work than the peak required.");
   } else if (frac > 0.05) {
     lines.push(
       farmsLost
-        ? "You opened the floodway across the crest. The lower ground paid for the towns."
-        : "You opened the floodway across the crest and kept the damage short.",
+        ? "You opened the overflow at the peak. The lower ground paid for the towns."
+        : "You opened the overflow at the peak and kept the damage short.",
     );
   } else if (mission.sacrificialFarms && (letter === "C" || letter === "D" || letter === "F")) {
-    lines.push("The floodway gate never opened. The river had nowhere to go but over the line.");
+    lines.push("The overflow gate never opened. The river had nowhere to go but over the line.");
   } else if (!mission.sacrificialFarms && frac <= 0.05 && (letter === "A" || letter === "B")) {
-    lines.push("You held the freshet without giving the fields to the river.");
+    lines.push("You held the flood without giving the fields to the river.");
   }
   if (state.breaches > 0) {
     lines.push(
@@ -1085,7 +1085,7 @@ export function scoreGame(state: GameState, mission: MissionDef): Scorecard {
   }
   const peakFeet = toFeet(state.peakDepth, state);
   lines.push(
-    `Crest ${peakFeet.toFixed(1)} ft on the ${mission.gauge.name} gauge. Civil funds left $${Math.round(state.budget)}.`,
+    `Peak ${peakFeet.toFixed(1)} ft on the ${mission.gauge.name} gauge. Building funds left $${Math.round(state.budget)}.`,
   );
 
   return {
@@ -1136,8 +1136,8 @@ export function runModel(src: GameState, mission: MissionDef, assumeSpill: boole
   for (const [label, ok] of names) (ok ? holds : failures).push(label);
   const peakFeet = toFeet(state.peakDepth, state);
   const summary = failures.length
-    ? `Model: ${failures.join(", ")} fail at a ${peakFeet.toFixed(1)} ft crest.`
-    : `Model: the line holds. Crest ${peakFeet.toFixed(1)} ft.`;
+    ? `Forecast: ${failures.join(", ")} fail at a ${peakFeet.toFixed(1)} ft peak.`
+    : `Forecast: the line holds. Peak ${peakFeet.toFixed(1)} ft.`;
   return { maxWater: Array.from(maxWater), failures, holds, peakFeet, summary };
 }
 
