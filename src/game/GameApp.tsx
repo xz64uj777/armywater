@@ -11,6 +11,8 @@ import {
   Volume2,
   VolumeX,
   Waves,
+  Ship,
+  Truck,
 } from "lucide-react";
 import { MISSIONS, missionById, tunedMission, type Difficulty, type MissionDef } from "./missions";
 import {
@@ -35,6 +37,9 @@ import {
   plugBreak,
   movePump,
   isWeakWall,
+  aimBoat,
+  steerBoat,
+  aimTruck,
   type GameState,
   type Letter,
   type ModelReport,
@@ -55,7 +60,7 @@ type FightGesture = {
   cellX: number;
   cellY: number;
   downAt: number;
-  mode: "pending" | "plug" | "pump" | "tap" | "look";
+  mode: "pending" | "plug" | "pump" | "tap" | "look" | "boat" | "truck";
   held: number;
   fromPump?: { x: number; y: number };
 };
@@ -141,6 +146,8 @@ export function GameApp() {
   const breachIdRef = useRef(0);
   const seenBreachRef = useRef(new Set<string>());
   const fightPtr = useRef<FightGesture | null>(null);
+  const helmRef = useRef<"boat" | "truck" | null>(null);
+  const [helm, setHelm] = useState<"boat" | "truck" | null>(null);
   const walksRef = useRef<Record<string, boolean>>({});
   const difficultyRef = useRef<Difficulty>("easy");
   const pausedByCoach = useRef(false);
@@ -270,6 +277,7 @@ export function GameApp() {
         }
         fx.storm = stormLevel(state);
         fx.rain = state.mode === "fight" && !state.paused;
+        fx.helm = helmRef.current;
         const gest = fightPtr.current;
         if (gest?.mode === "plug" && state.mode === "fight") {
           const held = (now - gest.downAt) / 1000;
@@ -498,7 +506,10 @@ export function GameApp() {
     fxRef.current.storm = 0;
     fxRef.current.rain = false;
     fxRef.current.pumpDrag = null;
+    fxRef.current.helm = null;
     fightPtr.current = null;
+    helmRef.current = null;
+    setHelm(null);
     alertSeenRef.current = new Set();
     alertCoolRef.current = 0;
     alertRef.current = null;
@@ -537,7 +548,7 @@ export function GameApp() {
     setStatus(
       state.paused
         ? "Clock is held. Read the card, then start the river."
-        : "The fight is on. Tap leaks and weak walls. Plug a breaking wall. Drag a pump to move it.",
+        : "The fight is on. Tap leaks and weak walls. Steer the boat. Drive the truck.",
     );
     audioRef.current?.place();
     setHudTick((n) => n + 1);
@@ -597,6 +608,10 @@ export function GameApp() {
         const dest = hover ?? relief.pickAt(e.clientX, e.clientY);
         fxRef.current.pumpDrag = dest;
       }
+      if (gest.mode === "boat" && moved >= 10) {
+        const pt = relief.pickPoint(e.clientX, e.clientY);
+        if (pt) steerBoat(state, Math.atan2(pt.y - state.boat.y, pt.x - state.boat.x));
+      }
       return;
     }
     const hover = relief.move(e.pointerId, e.clientX, e.clientY);
@@ -605,6 +620,15 @@ export function GameApp() {
       setHoverText(describe(state, hover.x, hover.y));
       if (state.mode === "build" && e.buttons > 0 && !lookRef.current && relief.fingers() < 2) tryPlace(hover.x, hover.y);
     }
+  }
+
+  function pickHelm(next: "boat" | "truck" | null, announce: boolean) {
+    helmRef.current = next;
+    setHelm(next);
+    fxRef.current.helm = next;
+    if (!announce) return;
+    if (next === "boat") setStatus("Drag to steer the boat, or tap a spot. The current will pull it.");
+    else if (next === "truck") setStatus("Drag or tap a route. Take sandbags to a levee or a crew, or back to the depot.");
   }
 
   function startFightGesture(id: number, clientX: number, clientY: number, state: GameState, relief: Relief) {
@@ -616,14 +640,15 @@ export function GameApp() {
     const leak = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.wall?.leaked));
     const pump = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.pump && (c.pump.moving ?? 0) <= 0));
     const ground = relief.pickAt(clientX, clientY);
+    const vehGuess = relief.hitVehicle(state, clientX, clientY) ?? helmRef.current;
     const cell = plug ?? leak ?? pump ?? ground;
-    if (!cell) return;
+    if (!cell && vehGuess !== "boat" && vehGuess !== "truck") return;
     const base: FightGesture = {
       id,
       sx: clientX,
       sy: clientY,
-      cellX: cell.x,
-      cellY: cell.y,
+      cellX: cell?.x ?? 0,
+      cellY: cell?.y ?? 0,
       downAt: performance.now(),
       mode: "tap",
       held: 0,
@@ -633,14 +658,22 @@ export function GameApp() {
       base.cellX = plug.x;
       base.cellY = plug.y;
       relief.setOrbitLock(true);
-    } else if (pump) {
-      base.mode = "pending";
-      base.fromPump = { x: pump.x, y: pump.y };
-      base.cellX = pump.x;
-      base.cellY = pump.y;
     } else if (leak) {
       base.cellX = leak.x;
       base.cellY = leak.y;
+    } else {
+      const veh = relief.hitVehicle(state, clientX, clientY);
+      const helmNow = veh ?? helmRef.current;
+      if (helmNow === "boat" || helmNow === "truck") {
+        base.mode = helmNow;
+        if (veh) pickHelm(veh, false);
+        relief.setOrbitLock(true);
+      } else if (pump) {
+        base.mode = "pending";
+        base.fromPump = { x: pump.x, y: pump.y };
+        base.cellX = pump.x;
+        base.cellY = pump.y;
+      }
     }
     fightPtr.current = base;
   }
@@ -693,6 +726,29 @@ export function GameApp() {
       const msg = movePump(state, gest.fromPump.x, gest.fromPump.y, dest.x, dest.y);
       setStatus(msg);
       if (msg.startsWith("Pump is moving")) audioRef.current?.place();
+      setHudTick((n) => n + 1);
+      return;
+    }
+    if (gest.mode === "boat" || gest.mode === "truck") {
+      const veh = relief.hitVehicle(state, clientX, clientY);
+      const moved = Math.hypot(clientX - gest.sx, clientY - gest.sy) > 12;
+      if (!moved && veh) {
+        pickHelm(veh, true);
+        return;
+      }
+      if (gest.mode === "boat") {
+        const pt = relief.pickPoint(clientX, clientY) ?? (hit ? { x: hit.x + 0.5, y: hit.y + 0.5 } : null);
+        if (pt) {
+          setStatus(aimBoat(state, pt.x, pt.y));
+          audioRef.current?.ui();
+        }
+      } else {
+        const dest = hit ?? relief.pickAt(clientX, clientY);
+        if (dest) {
+          setStatus(aimTruck(state, dest.x, dest.y));
+          audioRef.current?.ui();
+        }
+      }
       setHudTick((n) => n + 1);
       return;
     }
@@ -836,9 +892,13 @@ export function GameApp() {
               <p className="min-w-0 flex-1 bg-paper/90 px-2 py-1 font-display text-xs tracking-widest text-muted">
                 {model
                   ? model.summary
-                  : look
-                    ? "DRAG TO LOOK AROUND · TAP TO BUILD"
-                    : "DRAG TO DRAW A LINE · TWO FINGERS TO LOOK AROUND"}
+                  : state.mode === "fight" && helm === "boat"
+                    ? "DRAG TO STEER THE BOAT · TAP A SPOT"
+                    : state.mode === "fight" && helm === "truck"
+                      ? "DRAG OR TAP A ROUTE FOR THE TRUCK"
+                      : look
+                        ? "DRAG TO LOOK AROUND · TAP TO BUILD"
+                        : "DRAG TO DRAW A LINE · TWO FINGERS TO LOOK AROUND"}
               </p>
               <button
                 type="button"
@@ -913,6 +973,28 @@ export function GameApp() {
                   onClick={() => setAssumeSpill((v) => !v)}
                 >
                   {assumeSpill ? "Forecast: overflow open" : "Forecast: overflow shut"}
+                </button>
+              </div>
+            )}
+            {state.mode === "fight" && !state.ended && (
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  aria-pressed={helm === "boat"}
+                  className={`flex h-11 min-w-0 flex-1 items-center justify-center gap-2 border border-ink px-2 font-display text-sm tracking-wide ${helm === "boat" ? "bg-ink text-paper" : "bg-paper text-ink"}`}
+                  onClick={() => pickHelm(helm === "boat" ? null : "boat", true)}
+                >
+                  <Ship className="size-5" />
+                  {state.boat.carry > 0 ? `Boat · ${state.boat.carry} on board` : state.stranded.length ? "Boat · people on roofs" : "Boat"}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={helm === "truck"}
+                  className={`flex h-11 min-w-0 flex-1 items-center justify-center gap-2 border border-ink px-2 font-display text-sm tracking-wide ${helm === "truck" ? "bg-ink text-paper" : "bg-paper text-ink"}`}
+                  onClick={() => pickHelm(helm === "truck" ? null : "truck", true)}
+                >
+                  <Truck className="size-5" />
+                  {state.truck.reload > 0 ? "Truck · loading" : `Truck · ${state.truck.loads} load${state.truck.loads === 1 ? "" : "s"}`}
                 </button>
               </div>
             )}
@@ -1045,6 +1127,7 @@ function describe(state: GameState, x: number, y: number): string {
   if (c.pump) bits.push(c.pump.flooded ? "pump flooded" : (c.pump.moving ?? 0) > 0 ? "pump moving" : "pump running");
   if (c.kind === "river") bits.push(`stage ${c.water.toFixed(1)} m`);
   else if (c.water > 0.05) bits.push(`${c.water.toFixed(2)} m on the ground`);
+  if ((c.evac ?? 0) > 0 && c.water >= 0.18) bits.push("people on the roofs");
   if (c.failed) bits.push("LOST");
   if (c.spill) bits.push(state.spillOpen ? "gate open" : "gate shut");
   return bits.join(" · ");
@@ -1297,7 +1380,7 @@ const MANUAL: { n: string; title: string; body: string }[] = [
   {
     n: "06",
     title: "Stay on the line",
-    body: "A bubbling leak on a stressed levee will eat the wall if you leave it. Tap the leak to sandbag it. If a wall starts to break, a ring counts down — tap quickly or hold to plug it before time runs out. Press and hold a pump, then drag it to a new town, hospital, or lock; it will not pump until it is set. Tap a weak or failing levee to send the nearest free crew.",
+    body: "A bubbling leak on a stressed levee will eat the wall if you leave it. Tap the leak to sandbag it. If a wall starts to break, a ring counts down — tap quickly or hold to plug it before time runs out. Press and hold a pump, then drag it to a new town, hospital, or lock; it will not pump until it is set. Tap a weak or failing levee to send the nearest free crew. When a town floods, people stand on the roofs — tap Boat, then drag or tap a spot to steer; the current will pull it, and people you drop on dry ground count as saved. Tap Truck and drag or tap a route from the depot to a levee or a crew; a load strengthens that wall or gives the crew a fresh bag kit, and flooded roads slow or block the truck.",
   },
   {
     n: "07",
@@ -1370,6 +1453,7 @@ function Debrief({
         </div>
         <dl className="mt-5 grid grid-cols-2 gap-3 font-display text-sm tracking-wide sm:grid-cols-4">
           <Stat k="People dry" v={`${card.popSaved.toLocaleString()} / ${card.popTotal.toLocaleString()}`} />
+          <Stat k="Rescued" v={card.rescued ? card.rescued.toLocaleString() : "0"} />
           <Stat k="Peak" v={`${card.peakFeet.toFixed(1)} ft`} />
           <Stat k="Breaches" v={String(card.breaches)} />
           <Stat k="Funds left" v={`$${card.budgetLeft}`} />
