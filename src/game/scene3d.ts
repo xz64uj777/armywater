@@ -82,8 +82,10 @@ function waterLine(cell: Cell): number | null {
     const t = Math.max(0, Math.min(1, (cell.water - 0.35) / 2.6));
     return -0.14 + t * 0.44;
   }
-  if (cell.water < 0.05) return null;
-  return groundHeight(cell) + Math.min(0.12, 0.03 + cell.water * 0.05);
+  if (cell.water < 0.05 && !cell.failed) return null;
+  const ground = groundHeight(cell);
+  if (cell.failed) return ground + Math.min(0.52, 0.2 + Math.max(cell.water, 0.34) * 0.35);
+  return ground + Math.min(0.38, 0.03 + cell.water * 0.2);
 }
 
 function labelSprite(cell: Cell): THREE.Sprite | null {
@@ -201,6 +203,16 @@ export class Relief {
   private landTex: THREE.CanvasTexture;
   private fieldTex: THREE.CanvasTexture;
   private ripple: THREE.CanvasTexture;
+  private hemi: THREE.HemisphereLight;
+  private sun: THREE.DirectionalLight;
+  private rain: THREE.LineSegments;
+  private rainPos: Float32Array;
+  private burstPts: THREE.Points;
+  private burstVel: Float32Array;
+  private burstLife = 0;
+  private burstId = -1;
+  private lastPhase = 0;
+  private ring: THREE.Mesh;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
@@ -215,20 +227,20 @@ export class Relief {
     this.ripple = waterTex();
     this.scene.fog = new THREE.Fog(PAPER, 22, 48);
 
-    const hemi = new THREE.HemisphereLight(0xf4efe4, 0x8a7048, 1.15);
-    this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff4df, 1.35);
-    sun.position.set(8, 14, 6);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.bias = -0.0008;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 40;
-    sun.shadow.camera.left = -12;
-    sun.shadow.camera.right = 12;
-    sun.shadow.camera.top = 12;
-    sun.shadow.camera.bottom = -12;
-    this.scene.add(sun);
+    this.hemi = new THREE.HemisphereLight(0xf4efe4, 0x8a7048, 1.15);
+    this.scene.add(this.hemi);
+    this.sun = new THREE.DirectionalLight(0xfff4df, 1.35);
+    this.sun.position.set(8, 14, 6);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.bias = -0.0008;
+    this.sun.shadow.camera.near = 1;
+    this.sun.shadow.camera.far = 40;
+    this.sun.shadow.camera.left = -12;
+    this.sun.shadow.camera.right = 12;
+    this.sun.shadow.camera.top = 12;
+    this.sun.shadow.camera.bottom = -12;
+    this.scene.add(this.sun);
     const fill = new THREE.DirectionalLight(0xd5e2ee, 0.4);
     fill.position.set(-8, 6, -5);
     this.scene.add(fill);
@@ -283,6 +295,39 @@ export class Relief {
       this.crews.push(crew);
       this.scene.add(crew);
     }
+
+    const rainCount = 90;
+    this.rainPos = new Float32Array(rainCount * 6);
+    const rainGeo = new THREE.BufferGeometry();
+    rainGeo.setAttribute("position", new THREE.BufferAttribute(this.rainPos, 3));
+    this.rain = new THREE.LineSegments(
+      rainGeo,
+      new THREE.LineBasicMaterial({ color: 0xb7c9d4, transparent: true, opacity: 0.5, depthWrite: false }),
+    );
+    this.rain.visible = false;
+    this.rain.frustumCulled = false;
+    this.scene.add(this.rain);
+
+    const burstCount = 22;
+    const burstPos = new Float32Array(burstCount * 3);
+    this.burstVel = new Float32Array(burstCount * 3);
+    const burstGeo = new THREE.BufferGeometry();
+    burstGeo.setAttribute("position", new THREE.BufferAttribute(burstPos, 3));
+    this.burstPts = new THREE.Points(
+      burstGeo,
+      new THREE.PointsMaterial({ color: 0xe7f1f4, size: 0.08, transparent: true, opacity: 0.9, depthWrite: false }),
+    );
+    this.burstPts.visible = false;
+    this.burstPts.frustumCulled = false;
+    this.scene.add(this.burstPts);
+
+    this.ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.2, 0.32, 20),
+      new THREE.MeshBasicMaterial({ color: SCARLET, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    this.ring.rotation.x = -Math.PI / 2;
+    this.ring.visible = false;
+    this.scene.add(this.ring);
   }
 
   resize(w: number, h: number, dpr: number) {
@@ -329,8 +374,6 @@ export class Relief {
         this.distance = THREE.MathUtils.clamp(this.distance * (this.pinch / Math.max(8, dist)), 8, 42);
         this.pinch = dist;
       }
-      this.azimuth -= dx * 0.008;
-      this.polar = THREE.MathUtils.clamp(this.polar + dy * 0.006, 0.35, 1.2);
       return null;
     }
     if (this.orbitDrag && p.moved) {
@@ -611,7 +654,9 @@ export class Relief {
         continue;
       }
       const surface = h / w;
-      const bedCap = bed < 0.08 ? 0.3 : bed + 0.12;
+      const cell = state.cells[z0 * state.cols + x0];
+      const cap = cell?.failed ? 0.58 : 0.4;
+      const bedCap = bed < 0.08 ? 0.3 : bed + cap;
       const ripple = Math.sin(phase * 1.7 + wx * 2.4 + wz * 1.3) * 0.008;
       const y = Math.min(surface, bedCap) + ripple;
       pos.setY(i, y);
@@ -631,6 +676,11 @@ export class Relief {
 
   sync(state: GameState, fx: Fx) {
     this.ensure(state);
+    const dt = Math.max(0, Math.min(0.05, fx.phase - this.lastPhase));
+    this.lastPhase = fx.phase;
+    this.applySky(fx.storm ?? 0);
+    this.updateRain(fx, dt);
+    this.updateBurst(fx, dt);
     this.ripple.offset.x = fx.phase * 0.03;
     this.ripple.offset.y = Math.sin(fx.phase * 0.4) * 0.02;
     this.raiseWater(state, fx.phase);
@@ -728,8 +778,106 @@ export class Relief {
     );
     this.camera.lookAt(this.target);
     if (fx.trauma > 0 && fx.shake) {
-      this.camera.position.x += Math.sin(fx.phase * 40) * fx.trauma * 0.08 * this.span;
+      this.camera.position.x += Math.sin(fx.phase * 40) * fx.trauma * 0.12 * this.span;
+      this.camera.position.y += Math.cos(fx.phase * 33) * fx.trauma * 0.05 * this.span;
     }
+  }
+
+  private applySky(storm: number) {
+    const t = Math.max(0, Math.min(1, storm));
+    const sky = new THREE.Color(PAPER).lerp(new THREE.Color(0x3f4a55), t * 0.88);
+    this.renderer.setClearColor(sky, 1);
+    this.scene.fog = new THREE.Fog(sky.getHex(), 18 - t * 6, 46 - t * 8);
+    this.hemi.intensity = 1.15 - t * 0.5;
+    this.sun.intensity = 1.35 - t * 0.85;
+  }
+
+  private updateRain(fx: Fx, dt: number) {
+    const on = Boolean(fx.rain) && (fx.storm ?? 0) > 0.04;
+    this.rain.visible = on;
+    if (!on) return;
+    const storm = Math.max(0.15, fx.storm ?? 0.15);
+    const pos = this.rainPos;
+    const n = pos.length / 6;
+    const span = this.span + 5;
+    const cx = this.target.x;
+    const cz = this.target.z;
+    const fall = (8 + storm * 7) * Math.max(dt, 0.008);
+    const wind = 0.55 * storm;
+    for (let i = 0; i < n; i++) {
+      const o = i * 6;
+      let x = pos[o];
+      let y = pos[o + 1];
+      let z = pos[o + 2];
+      if (y < -0.3 || (x === 0 && y === 0 && z === 0)) {
+        x = cx + (Math.random() - 0.5) * span;
+        z = cz + (Math.random() - 0.5) * span;
+        y = 2.2 + Math.random() * 7;
+      } else {
+        y -= fall;
+        x += wind * dt * 10;
+      }
+      const len = 0.2 + storm * 0.08;
+      pos[o] = x;
+      pos[o + 1] = y;
+      pos[o + 2] = z;
+      pos[o + 3] = x + wind * 0.18;
+      pos[o + 4] = y - len;
+      pos[o + 5] = z;
+    }
+    (this.rain.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    (this.rain.material as THREE.LineBasicMaterial).opacity = 0.22 + storm * 0.42;
+  }
+
+  private updateBurst(fx: Fx, dt: number) {
+    if (fx.breach && fx.breach.id !== this.burstId) {
+      this.burstId = fx.breach.id;
+      this.startBurst(fx.breach.x, fx.breach.y);
+    }
+    if (this.burstLife <= 0) {
+      this.burstPts.visible = false;
+      this.ring.visible = false;
+      return;
+    }
+    this.burstLife = Math.max(0, this.burstLife - dt * 1.15);
+    const life = this.burstLife;
+    const pos = this.burstPts.geometry.attributes.position as THREE.BufferAttribute;
+    const vel = this.burstVel;
+    for (let i = 0; i < pos.count; i++) {
+      vel[i * 3 + 1] -= 6 * dt;
+      pos.setXYZ(i, pos.getX(i) + vel[i * 3] * dt, pos.getY(i) + vel[i * 3 + 1] * dt, pos.getZ(i) + vel[i * 3 + 2] * dt);
+    }
+    pos.needsUpdate = true;
+    const mat = this.burstPts.material as THREE.PointsMaterial;
+    mat.opacity = Math.min(1, life);
+    this.burstPts.visible = life > 0;
+    const ringMat = this.ring.material as THREE.MeshBasicMaterial;
+    const grown = 1 + (1 - life) * 3.2;
+    this.ring.scale.set(grown, grown, 1);
+    ringMat.opacity = life * 0.85;
+    this.ring.visible = life > 0;
+  }
+
+  private startBurst(x: number, y: number) {
+    const parcel = this.parcels[y * this.cols + x];
+    const py = (parcel?.y ?? 0.25) + 0.12;
+    const ox = x + 0.5;
+    const oz = y + 0.5;
+    const pos = this.burstPts.geometry.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 0.7 + Math.random() * 1.6;
+      this.burstVel[i * 3] = Math.cos(ang) * spd;
+      this.burstVel[i * 3 + 1] = 1.4 + Math.random() * 2.2;
+      this.burstVel[i * 3 + 2] = Math.sin(ang) * spd;
+      pos.setXYZ(i, ox, py, oz);
+    }
+    pos.needsUpdate = true;
+    this.burstPts.visible = true;
+    this.ring.position.set(ox, py + 0.02, oz);
+    this.ring.scale.set(1, 1, 1);
+    this.ring.visible = true;
+    this.burstLife = 1;
   }
 
   render() {

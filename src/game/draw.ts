@@ -24,6 +24,10 @@ export interface Fx {
   model: number[] | null;
   marks: { x: number; y: number }[];
   tool?: string;
+  /** 0 = clear, 1 = darkest at the peak of the flood. Visual only. */
+  storm?: number;
+  rain?: boolean;
+  breach?: { x: number; y: number; id: number } | null;
 }
 
 const INK = "#1b2418";
