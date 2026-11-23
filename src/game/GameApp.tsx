@@ -30,6 +30,11 @@ import {
   step,
   toFeet,
   toggleSpill,
+  FIGHT,
+  sandbagLeak,
+  plugBreak,
+  movePump,
+  isWeakWall,
   type GameState,
   type Letter,
   type ModelReport,
@@ -42,6 +47,18 @@ import type { Relief } from "./scene3d";
 
 type Screen = "title" | "brief" | "manual" | "play";
 type Tool = "levee" | "sandbag" | "pump" | "sell" | "repair";
+
+type FightGesture = {
+  id: number;
+  sx: number;
+  sy: number;
+  cellX: number;
+  cellY: number;
+  downAt: number;
+  mode: "pending" | "plug" | "pump" | "tap" | "look";
+  held: number;
+  fromPump?: { x: number; y: number };
+};
 
 const SAVE_KEY = "hold-the-river-v1";
 const RANK: Record<Letter, number> = { A: 5, B: 4, C: 3, D: 2, F: 1 };
@@ -104,7 +121,7 @@ export function GameApp() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewRef = useRef<View | null>(null);
   const reliefRef = useRef<Relief | null>(null);
-  const fxRef = useRef<Fx>({ phase: 0, trauma: 0, shake: true, hover: null, floaters: [], model: null, marks: [], storm: 0, rain: false, breach: null });
+  const fxRef = useRef<Fx>({ phase: 0, trauma: 0, shake: true, hover: null, floaters: [], model: null, marks: [], storm: 0, rain: false, breach: null, pumpDrag: null });
   const toolRef = useRef(tool);
   const screenRef = useRef(screen);
   const missionRef = useRef(missionById(missionId));
@@ -123,6 +140,7 @@ export function GameApp() {
   const alertCoolRef = useRef(0);
   const breachIdRef = useRef(0);
   const seenBreachRef = useRef(new Set<string>());
+  const fightPtr = useRef<FightGesture | null>(null);
   const walksRef = useRef<Record<string, boolean>>({});
   const difficultyRef = useRef<Difficulty>("easy");
   const pausedByCoach = useRef(false);
@@ -252,6 +270,22 @@ export function GameApp() {
         }
         fx.storm = stormLevel(state);
         fx.rain = state.mode === "fight" && !state.paused;
+        const gest = fightPtr.current;
+        if (gest?.mode === "plug" && state.mode === "fight") {
+          const held = (now - gest.downAt) / 1000;
+          const add = Math.max(0, held - gest.held);
+          if (add > 0) {
+            const msg = plugBreak(state, gest.cellX, gest.cellY, add / FIGHT.plugHold);
+            gest.held = held;
+            if (msg.startsWith("You plugged")) {
+              audioRef.current?.place();
+              floatAt(gest.cellX, gest.cellY, "Plugged");
+              setStatus(msg);
+              fightPtr.current = null;
+              reliefRef.current?.setOrbitLock(false);
+            }
+          }
+        }
         const top = state.log[0]?.text ?? "";
         if (top && top !== logRef.current) {
           logRef.current = top;
@@ -463,6 +497,8 @@ export function GameApp() {
     fxRef.current.breach = null;
     fxRef.current.storm = 0;
     fxRef.current.rain = false;
+    fxRef.current.pumpDrag = null;
+    fightPtr.current = null;
     alertSeenRef.current = new Set();
     alertCoolRef.current = 0;
     alertRef.current = null;
@@ -498,7 +534,11 @@ export function GameApp() {
       pausedByCoach.current = true;
       goCoach(coachRef.current + 1);
     }
-    setStatus(state.paused ? "Clock is held. Read the card, then start the river." : "The fight is on. Watch the river gauge.");
+    setStatus(
+      state.paused
+        ? "Clock is held. Read the card, then start the river."
+        : "The fight is on. Tap leaks and weak walls. Plug a breaking wall. Drag a pump to move it.",
+    );
     audioRef.current?.place();
     setHudTick((n) => n + 1);
   }
@@ -534,22 +574,151 @@ export function GameApp() {
       relief.begin(e.pointerId, e.clientX, e.clientY);
       e.currentTarget.setPointerCapture(e.pointerId);
       paintRef.current = "";
+      startFightGesture(e.pointerId, e.clientX, e.clientY, state, relief);
+    }
+    const gest = fightPtr.current;
+    if (gest && gest.id === e.pointerId && state.mode === "fight") {
+      const moved = Math.hypot(e.clientX - gest.sx, e.clientY - gest.sy);
+      if (gest.mode === "pending") {
+        if (moved < 14 && (performance.now() - gest.downAt) / 1000 >= FIGHT.pumpPress && gest.fromPump) {
+          gest.mode = "pump";
+          relief.setOrbitLock(true);
+        } else if (moved >= 14) {
+          gest.mode = "look";
+          relief.setOrbitLock(false);
+        }
+      }
+      const hover = relief.move(e.pointerId, e.clientX, e.clientY);
+      if (hover && cellAt(state, hover.x, hover.y)) {
+        fxRef.current.hover = hover;
+        setHoverText(describe(state, hover.x, hover.y));
+      }
+      if (gest.mode === "pump") {
+        const dest = hover ?? relief.pickAt(e.clientX, e.clientY);
+        fxRef.current.pumpDrag = dest;
+      }
+      return;
     }
     const hover = relief.move(e.pointerId, e.clientX, e.clientY);
     if (hover && cellAt(state, hover.x, hover.y)) {
       fxRef.current.hover = hover;
       setHoverText(describe(state, hover.x, hover.y));
-      if (e.buttons > 0 && !lookRef.current && relief.fingers() < 2) tryPlace(hover.x, hover.y);
+      if (state.mode === "build" && e.buttons > 0 && !lookRef.current && relief.fingers() < 2) tryPlace(hover.x, hover.y);
     }
+  }
+
+  function startFightGesture(id: number, clientX: number, clientY: number, state: GameState, relief: Relief) {
+    relief.setOrbitLock(false);
+    fxRef.current.pumpDrag = null;
+    fightPtr.current = null;
+    if (state.mode !== "fight" || state.ended) return;
+    const plug = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.wall?.breaking));
+    const leak = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.wall?.leaked));
+    const pump = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.pump && (c.pump.moving ?? 0) <= 0));
+    const ground = relief.pickAt(clientX, clientY);
+    const cell = plug ?? leak ?? pump ?? ground;
+    if (!cell) return;
+    const base: FightGesture = {
+      id,
+      sx: clientX,
+      sy: clientY,
+      cellX: cell.x,
+      cellY: cell.y,
+      downAt: performance.now(),
+      mode: "tap",
+      held: 0,
+    };
+    if (plug) {
+      base.mode = "plug";
+      base.cellX = plug.x;
+      base.cellY = plug.y;
+      relief.setOrbitLock(true);
+    } else if (pump) {
+      base.mode = "pending";
+      base.fromPump = { x: pump.x, y: pump.y };
+      base.cellX = pump.x;
+      base.cellY = pump.y;
+    } else if (leak) {
+      base.cellX = leak.x;
+      base.cellY = leak.y;
+    }
+    fightPtr.current = base;
   }
 
   function onMapUp(e: React.PointerEvent<HTMLCanvasElement>) {
     const relief = reliefRef.current;
     const state = stateRef.current;
     if (!relief || !state) return;
+    const gest = fightPtr.current && fightPtr.current.id === e.pointerId ? fightPtr.current : null;
     const hit = relief.end(e.pointerId, e.clientX, e.clientY);
+    relief.setOrbitLock(false);
+    fxRef.current.pumpDrag = null;
+    fightPtr.current = null;
+    if (state.mode === "fight" && gest) {
+      endFightGesture(state, gest, e.clientX, e.clientY, relief, hit);
+      return;
+    }
     if (!hit || !cellAt(state, hit.x, hit.y)) return;
     tryPlace(hit.x, hit.y);
+  }
+
+  function endFightGesture(
+    state: GameState,
+    gest: FightGesture,
+    clientX: number,
+    clientY: number,
+    relief: Relief,
+    hit: { x: number; y: number } | null,
+  ) {
+    if (gest.mode === "look") return;
+    if (gest.mode === "plug") {
+      const held = (performance.now() - gest.downAt) / 1000;
+      if (held < 0.22) {
+        const msg = plugBreak(state, gest.cellX, gest.cellY, 1 / FIGHT.plugTaps);
+        if (msg) setStatus(msg);
+        if (msg.startsWith("You plugged")) {
+          audioRef.current?.place();
+          floatAt(gest.cellX, gest.cellY, "Plugged");
+        }
+      }
+      setHudTick((n) => n + 1);
+      return;
+    }
+    if (gest.mode === "pump" && gest.fromPump) {
+      const dest = relief.pickAt(clientX, clientY) ?? hit;
+      if (!dest) {
+        setStatus("Drop the pump on a town, hospital, or lock.");
+        return;
+      }
+      const msg = movePump(state, gest.fromPump.x, gest.fromPump.y, dest.x, dest.y);
+      setStatus(msg);
+      if (msg.startsWith("Pump is moving")) audioRef.current?.place();
+      setHudTick((n) => n + 1);
+      return;
+    }
+    const moved = Math.hypot(clientX - gest.sx, clientY - gest.sy) > 12;
+    if (moved || gest.mode === "pending" && moved) return;
+    const leak = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.wall?.leaked)) ?? (cellAt(state, gest.cellX, gest.cellY)?.wall?.leaked ? { x: gest.cellX, y: gest.cellY } : null);
+    if (leak && cellAt(state, leak.x, leak.y)?.wall?.leaked) {
+      const msg = sandbagLeak(state, leak.x, leak.y);
+      setStatus(msg);
+      if (msg.startsWith("Leak sandbagged")) {
+        audioRef.current?.place();
+        floatAt(leak.x, leak.y, "Sandbagged");
+      }
+      setHudTick((n) => n + 1);
+      return;
+    }
+    const wallHit = relief.hitNear(state, clientX, clientY, (c) => Boolean(c.wall && isWeakWall(c.wall))) ?? (hit && cellAt(state, hit.x, hit.y)?.wall && isWeakWall(cellAt(state, hit.x, hit.y)!.wall!) ? hit : null);
+    if (wallHit) {
+      setTool("repair");
+      const msg = orderCrew(state, wallHit.x, wallHit.y, "repair");
+      setStatus(msg);
+      audioRef.current?.ui();
+      setHudTick((n) => n + 1);
+      return;
+    }
+    if (hit && cellAt(state, hit.x, hit.y)) tryPlace(hit.x, hit.y);
   }
 
   function tryPlace(x: number, y: number) {
@@ -870,8 +1039,10 @@ function describe(state: GameState, x: number, y: number): string {
   if (c.wall) {
     const pct = Math.max(0, Math.round((c.wall.hp / c.wall.maxHp) * 100));
     bits.push(c.wall.breached ? `${c.wall.kind} BREACH` : `${c.wall.kind} ${pct}%`);
+    if (c.wall.breaking) bits.push("giving way — plug it");
+    else if (c.wall.leaked) bits.push("leak — tap to sandbag");
   }
-  if (c.pump) bits.push(c.pump.flooded ? "pump flooded" : "pump running");
+  if (c.pump) bits.push(c.pump.flooded ? "pump flooded" : (c.pump.moving ?? 0) > 0 ? "pump moving" : "pump running");
   if (c.kind === "river") bits.push(`stage ${c.water.toFixed(1)} m`);
   else if (c.water > 0.05) bits.push(`${c.water.toFixed(2)} m on the ground`);
   if (c.failed) bits.push("LOST");
@@ -1125,11 +1296,16 @@ const MANUAL: { n: string; title: string; body: string }[] = [
   },
   {
     n: "06",
+    title: "Stay on the line",
+    body: "A bubbling leak on a stressed levee will eat the wall if you leave it. Tap the leak to sandbag it. If a wall starts to break, a ring counts down — tap quickly or hold to plug it before time runs out. Press and hold a pump, then drag it to a new town, hospital, or lock; it will not pump until it is set. Tap a weak or failing levee to send the nearest free crew.",
+  },
+  {
+    n: "07",
     title: "The overflow gate",
     body: "The gate dumps the river into the lower fields. Open it when the gauge hits the black high-flood mark, and shut it once the label says GOING DOWN. Leave it open the whole fight and the grade drops. On Millford a built line should not need it. On Oxbow and Port Amity, a shut gate lets the peak over the levees.",
   },
   {
-    n: "07",
+    n: "08",
     title: "The grade",
     body: "A means the town, lock, and hospital stayed dry and you did not flood the fields for too long. B means you held, but the fields or a gate left open too long paid for it. Losing the town, the lock, or the hospital is C, D, or F. Grades stay on this screen.",
   },
@@ -1269,7 +1445,7 @@ function crewBoundFor(state: GameState, x: number, y: number): boolean {
 function pickFightAlert(state: GameState, seen: Set<string>): FightAlert | null {
   let worst: { x: number; y: number; label: string; breached: boolean; frac: number } | null = null;
   for (const c of state.cells) {
-    if (!c.wall || seen.has(`wall:${c.x},${c.y}`) || crewBoundFor(state, c.x, c.y)) continue;
+    if (!c.wall || c.wall.breaking || seen.has(`wall:${c.x},${c.y}`) || crewBoundFor(state, c.x, c.y)) continue;
     const frac = c.wall.maxHp > 0 ? c.wall.hp / c.wall.maxHp : 1;
     if (!c.wall.breached && frac >= 0.45) continue;
     if (!worst || (c.wall.breached ? -1 : frac) < (worst.breached ? -1 : worst.frac)) {
