@@ -55,6 +55,7 @@ export interface Cell {
   buildPump: boolean;
   spill: boolean;
   bridge: boolean;
+  evac?: number;
 }
 
 export interface Crew {
@@ -67,6 +68,37 @@ export interface Crew {
   intent: "repair" | "sandbag";
   work: number;
   stranded: number;
+  kits: number;
+}
+
+export interface Stranded {
+  id: number;
+  x: number;
+  y: number;
+  ox: number;
+  oz: number;
+  people: number;
+  originX: number;
+  originY: number;
+}
+
+export interface Boat {
+  x: number;
+  y: number;
+  heading: number;
+  carry: number;
+  dest: { x: number; y: number } | null;
+  launched: boolean;
+  fromKey?: string;
+}
+
+export interface Truck {
+  x: number;
+  y: number;
+  heading: number;
+  loads: number;
+  path: { x: number; y: number }[];
+  reload: number;
 }
 
 export interface LogLine {
@@ -110,6 +142,12 @@ export interface GameState {
   headless?: boolean;
   leakSeq?: number;
   lastLeakAt?: number;
+  stranded: Stranded[];
+  boat: Boat;
+  truck: Truck;
+  rescued: number;
+  rescuedFrom: Record<string, number>;
+  evacSeq?: number;
 }
 
 export const COSTS = { levee: 80, sandbag: 26, pump: 60, emergency: 22 } as const;
@@ -127,6 +165,18 @@ export const FIGHT = {
   pumpPress: 0.4,
   pumpMove: 2.6,
   weakFrac: 0.45,
+  boatSpeed: 2.15,
+  boatCurrent: 0.55,
+  boatReach: 0.48,
+  truckSpeed: 2.35,
+  truckSlow: 0.42,
+  truckBlock: 0.75,
+  truckLoads: 2,
+  truckHeal: 0.22,
+  truckReload: 1.8,
+  evacWater: 0.18,
+  evacFrac: 0.28,
+  evacGroup: 120,
 } as const;
 
 const LEVEE = { height: 2.45, hp: 170 };
@@ -173,6 +223,7 @@ export interface Scorecard {
   peakFeet: number;
   spillSeconds: number;
   spillFraction: number;
+  rescued: number;
 }
 
 export interface ModelReport {
@@ -413,6 +464,7 @@ export function createState(mission: MissionDef): GameState {
     intent: "repair",
     work: 0,
     stranded: 0,
+    kits: 0,
   }));
 
   return {
@@ -447,6 +499,12 @@ export function createState(mission: MissionDef): GameState {
     hitMajor: false,
     hitCrest: false,
     peakDepth: baseDepth,
+    stranded: [],
+    boat: { x: 0, y: 0, heading: 0, carry: 0, dest: null, launched: false },
+    truck: { x: depot.x, y: depot.y, heading: 0, loads: FIGHT.truckLoads, path: [], reload: 0 },
+    rescued: 0,
+    rescuedFrom: {},
+    evacSeq: 0,
   };
 }
 
@@ -582,7 +640,7 @@ export function orderCrew(state: GameState, x: number, y: number, intent: "repai
       return "Sandbags are already up.";
     }
     if (!cell.buildWall) return "Sandbags go on a bank.";
-    if (!cell.wall && state.reserve < COSTS.emergency) return "The emergency reserve is spent.";
+    if (!cell.wall && state.reserve < COSTS.emergency && state.crews.every((c) => c.kits <= 0)) return "The emergency reserve is spent.";
   } else if (!needsWork(cell)) {
     return "Nothing there needs a crew.";
   }
@@ -633,6 +691,15 @@ export function startFight(state: GameState) {
   }
   state.leakSeq = 0;
   state.lastLeakAt = 0;
+  state.stranded = [];
+  state.rescued = 0;
+  state.rescuedFrom = {};
+  state.evacSeq = 0;
+  for (const c of state.cells) c.evac = 0;
+  for (const crew of state.crews) crew.kits = 0;
+  placeBoat(state);
+  const depotCell = state.cells.find((c) => c.kind === "depot") ?? state.cells[0];
+  state.truck = { x: depotCell.x, y: depotCell.y, heading: 0, loads: FIGHT.truckLoads, path: [], reload: 0 };
   const depot = state.cells.find((c) => c.kind === "depot");
   for (const crew of state.crews) {
     crew.task = "idle";
@@ -645,7 +712,7 @@ export function startFight(state: GameState) {
     }
   }
   state.log = [];
-  pushLog(state, "The fight is on. Tap leaks and weak walls. Plug a breaking wall. Drag a pump to move it.");
+  pushLog(state, "The fight is on. Tap leaks and weak walls. Steer the boat. Drive the truck.");
 }
 
 function gateBlocks(a: Cell, b: Cell, state: GameState): boolean {
@@ -1074,14 +1141,17 @@ function tickCrews(state: GameState, dt: number) {
         crew.task = "idle";
         continue;
       }
-      if (!here.wall && state.reserve < COSTS.emergency) {
+      if (!here.wall && state.reserve < COSTS.emergency && crew.kits <= 0) {
         crew.task = "idle";
         pushLog(state, "Reserve empty. Sandbag order cancelled.");
         continue;
       }
       crew.work += dt;
       if (crew.work >= SANDBAG_TIME) {
-        if (!here.wall) state.reserve -= COSTS.emergency;
+        if (!here.wall) {
+          if (crew.kits > 0) crew.kits -= 1;
+          else state.reserve -= COSTS.emergency;
+        }
         here.wall = {
           kind: "sandbag",
           hp: SANDBAG.hp,
@@ -1095,6 +1165,331 @@ function tickCrews(state: GameState, dt: number) {
       }
     }
   }
+}
+
+function placeBoat(state: GameState) {
+  const river = state.river;
+  const first = river.length ? state.cells[river[0]] : state.cells.find((c) => c.kind === "river") ?? state.cells[0];
+  let nx = first.x;
+  let ny = first.y + 1;
+  if (river.length > 1) {
+    const n = state.cells[river[1]];
+    nx = n.x;
+    ny = n.y;
+  }
+  state.boat = {
+    x: first.x + 0.5,
+    y: first.y + 0.5,
+    heading: Math.atan2(ny - first.y, nx - first.x),
+    carry: 0,
+    dest: null,
+    launched: true,
+  };
+}
+
+function sampleWater(state: GameState, x: number, y: number): { cell: Cell | null; water: number; river: boolean } {
+  const c = cellAt(state, Math.floor(x), Math.floor(y));
+  if (!c) return { cell: null, water: 0, river: false };
+  return { cell: c, water: c.kind === "river" ? Math.max(c.water, 0.4) : c.water, river: c.kind === "river" };
+}
+
+function isNavigable(state: GameState, x: number, y: number): boolean {
+  const s = sampleWater(state, x, y);
+  if (!s.cell) return false;
+  if (s.cell.bridge) return true;
+  return s.water >= 0.12 || s.river;
+}
+
+function isLanding(state: GameState, x: number, y: number): boolean {
+  const c = cellAt(state, Math.floor(x), Math.floor(y));
+  if (!c || c.kind === "river") return false;
+  if (c.water >= 0.1) return false;
+  return c.kind === "high" || c.kind === "depot" || c.kind === "upland" || c.kind === "bank" || c.kind === "road" || c.kind === "town" || c.kind === "hospital" || c.kind === "lock";
+}
+
+function riverFlow(state: GameState, x: number, y: number): { x: number; y: number } {
+  const river = state.river;
+  if (!river.length) return { x: 0, y: 0 };
+  let best = 0;
+  let bd = 1e9;
+  for (let i = 0; i < river.length; i++) {
+    const c = state.cells[river[i]];
+    const d = Math.hypot(c.x + 0.5 - x, c.y + 0.5 - y);
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  const a = state.cells[river[best]];
+  const b = state.cells[river[Math.min(river.length - 1, best + 1)]];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const m = Math.hypot(dx, dy) || 1;
+  const nearRiver = bd < 1.2;
+  const k = FIGHT.boatCurrent * (nearRiver ? 1 : 0.35);
+  return { x: (dx / m) * k, y: (dy / m) * k };
+}
+
+function tickRescue(state: GameState, dt: number) {
+  void dt;
+  if (state.headless || state.mode !== "fight") return;
+  for (const c of state.cells) {
+    if (c.pop <= 0 || c.water < FIGHT.evacWater) continue;
+    if ((c.evac ?? 0) > 0) continue;
+    const pool = Math.round(c.pop * FIGHT.evacFrac);
+    if (pool < 40) continue;
+    const groups = Math.max(1, Math.min(3, Math.round(pool / FIGHT.evacGroup)));
+    const each = Math.max(40, Math.round(pool / groups));
+    c.evac = groups * each;
+    for (let i = 0; i < groups; i++) {
+      state.evacSeq = (state.evacSeq ?? 0) + 1;
+      state.stranded.push({
+        id: state.evacSeq,
+        x: c.x,
+        y: c.y,
+        ox: (i - (groups - 1) / 2) * 0.22,
+        oz: (i % 2 === 0 ? -0.12 : 0.12),
+        people: each,
+        originX: c.x,
+        originY: c.y,
+      });
+    }
+    pushLog(state, `People are on the roofs at ${c.label}. Steer the boat to pick them up.`);
+  }
+}
+
+export function aimBoat(state: GameState, x: number, y: number): string {
+  if (state.mode !== "fight") return "The boat launches once the fight starts.";
+  state.boat.dest = { x, y };
+  state.boat.heading = Math.atan2(y - state.boat.y, x - state.boat.x);
+  return "Boat is underway. The current will pull it.";
+}
+
+export function steerBoat(state: GameState, heading: number) {
+  if (state.mode !== "fight") return;
+  state.boat.heading = heading;
+  state.boat.dest = {
+    x: state.boat.x + Math.cos(heading) * 2.2,
+    y: state.boat.y + Math.sin(heading) * 2.2,
+  };
+}
+
+function tickBoat(state: GameState, dt: number) {
+  if (state.headless || state.mode !== "fight") return;
+  const boat = state.boat;
+  if (!boat.launched) return;
+  if (boat.dest) {
+    const dx = boat.dest.x - boat.x;
+    const dy = boat.dest.y - boat.y;
+    if (Math.hypot(dx, dy) < 0.12) boat.dest = null;
+    else boat.heading = Math.atan2(dy, dx);
+  }
+  const flow = riverFlow(state, boat.x, boat.y);
+  const speed = boat.dest ? FIGHT.boatSpeed : 0;
+  const vx = Math.cos(boat.heading) * speed + flow.x;
+  const vy = Math.sin(boat.heading) * speed + flow.y;
+  const nx = boat.x + vx * dt;
+  const ny = boat.y + vy * dt;
+  if (isNavigable(state, nx, ny) || isLanding(state, nx, ny)) {
+    boat.x = nx;
+    boat.y = ny;
+  } else {
+    const sx = boat.x + vx * dt;
+    if (isNavigable(state, sx, boat.y) || isLanding(state, sx, boat.y)) boat.x = sx;
+    const sy = boat.y + vy * dt;
+    if (isNavigable(state, boat.x, sy) || isLanding(state, boat.x, sy)) boat.y = sy;
+    boat.dest = null;
+  }
+  if (boat.carry <= 0) {
+    let best = -1;
+    let bd: number = FIGHT.boatReach;
+    for (let i = 0; i < state.stranded.length; i++) {
+      const p = state.stranded[i];
+      const d = Math.hypot(p.x + 0.5 + p.ox - boat.x, p.y + 0.5 + p.oz - boat.y);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    }
+    if (best >= 0) {
+      const p = state.stranded[best];
+      boat.carry = p.people;
+      boat.fromKey = `${p.originX},${p.originY}`;
+      state.stranded.splice(best, 1);
+      pushLog(state, `${p.people} people are in the boat. Take them to dry ground.`);
+    }
+  } else if (isLanding(state, boat.x, boat.y) || neighborsDry(state, boat.x, boat.y)) {
+    const n = boat.carry;
+    const origin = nearestOrigin(state, boat.x, boat.y);
+    boat.carry = 0;
+    state.rescued += n;
+    const key = origin ?? "0,0";
+    state.rescuedFrom[key] = (state.rescuedFrom[key] ?? 0) + n;
+    pushLog(state, `${n} people are safe on dry ground.`);
+  }
+}
+
+function nearestOrigin(state: GameState, x: number, y: number): string | null {
+  // If we just picked up, we should have stored origin on the boat. Use last pickup via a field if present.
+  const from = state.boat.fromKey;
+  if (from) {
+    state.boat.fromKey = undefined;
+    return from;
+  }
+  let best: Cell | null = null;
+  let bd = 3;
+  for (const c of state.cells) {
+    if (c.pop <= 0) continue;
+    const d = Math.hypot(c.x + 0.5 - x, c.y + 0.5 - y);
+    if (d < bd) {
+      bd = d;
+      best = c;
+    }
+  }
+  return best ? `${best.x},${best.y}` : null;
+}
+
+function neighborsDry(state: GameState, x: number, y: number): boolean {
+  for (const [dx, dy] of DIRS) {
+    if (isLanding(state, x + dx * 0.55, y + dy * 0.55)) return true;
+  }
+  return false;
+}
+
+function truckDrivable(c: Cell): boolean {
+  if (c.kind === "river") return Boolean(c.bridge) && c.water < FIGHT.truckBlock + 0.4;
+  if (c.kind === "wetland" || c.kind === "basin" || c.kind === "farm") return false;
+  if (c.water >= FIGHT.truckBlock) return false;
+  return true;
+}
+
+function truckSpeedAt(c: Cell): number {
+  if (c.water > 0.22) return FIGHT.truckSpeed * FIGHT.truckSlow;
+  return FIGHT.truckSpeed;
+}
+
+function truckPath(state: GameState, sx: number, sy: number, gx: number, gy: number) {
+  if (sx === gx && sy === gy) return [{ x: sx, y: sy }];
+  const start = sy * state.cols + sx;
+  const goal = gy * state.cols + gx;
+  const q = [start];
+  const prev = new Map<number, number>();
+  prev.set(start, -1);
+  while (q.length) {
+    const cur = q.shift()!;
+    if (cur === goal) break;
+    const c = state.cells[cur];
+    for (const [dx, dy] of DIRS) {
+      const x = c.x + dx;
+      const y = c.y + dy;
+      if (x < 0 || y < 0 || x >= state.cols || y >= state.rows) continue;
+      const j = y * state.cols + x;
+      if (prev.has(j)) continue;
+      const n = state.cells[j];
+      if (j !== goal && !truckDrivable(n)) continue;
+      if (j === goal && n.kind === "river" && !n.bridge) continue;
+      prev.set(j, cur);
+      q.push(j);
+    }
+  }
+  if (!prev.has(goal)) return null;
+  const path: { x: number; y: number }[] = [];
+  let cur = goal;
+  while (cur !== -1) {
+    const c = state.cells[cur];
+    path.push({ x: c.x, y: c.y });
+    const p = prev.get(cur);
+    if (p == null || p === -1) break;
+    cur = p;
+  }
+  path.reverse();
+  return path;
+}
+
+export function aimTruck(state: GameState, x: number, y: number): string {
+  if (state.mode !== "fight") return "The truck rolls once the fight starts.";
+  const tx = Math.round(state.truck.x);
+  const ty = Math.round(state.truck.y);
+  const path = truckPath(state, tx, ty, x, y);
+  if (!path) return "No dry road to that spot. Flooded streets may be blocked.";
+  state.truck.path = path.slice(1);
+  const dest = cellAt(state, x, y);
+  if (dest?.kind === "depot") return "Truck is heading back to the depot to reload.";
+  if (dest?.wall) return `Truck is taking sandbags to ${dest.label}.`;
+  return "Truck is on the way.";
+}
+
+function tickTruck(state: GameState, dt: number) {
+  if (state.headless || state.mode !== "fight") return;
+  const truck = state.truck;
+  if (truck.reload > 0) {
+    truck.reload = Math.max(0, truck.reload - dt);
+    if (truck.reload <= 0) {
+      truck.loads = FIGHT.truckLoads;
+      pushLog(state, "The truck is loaded at the depot.");
+    }
+    return;
+  }
+  const here = cellAt(state, Math.round(truck.x), Math.round(truck.y));
+  if (here?.kind === "depot" && truck.loads < FIGHT.truckLoads && !truck.path.length) {
+    truck.reload = FIGHT.truckReload;
+    return;
+  }
+  const next = truck.path[0];
+  if (!next) return;
+  const cell = cellAt(state, next.x, next.y);
+  if (!cell || !truckDrivable(cell)) {
+    truck.path = [];
+    pushLog(state, "The road is under. Pick another route.");
+    return;
+  }
+  const dx = next.x - truck.x;
+  const dy = next.y - truck.y;
+  const dist = Math.hypot(dx, dy) || 0.0001;
+  truck.heading = Math.atan2(dy, dx);
+  const stepDist = truckSpeedAt(cell) * dt;
+  if (dist <= stepDist) {
+    truck.x = next.x;
+    truck.y = next.y;
+    truck.path.shift();
+    if (!truck.path.length) truckArrive(state);
+  } else {
+    truck.x += (dx / dist) * stepDist;
+    truck.y += (dy / dist) * stepDist;
+  }
+}
+
+function truckArrive(state: GameState) {
+  const truck = state.truck;
+  const here = cellAt(state, Math.round(truck.x), Math.round(truck.y));
+  if (!here) return;
+  if (here.kind === "depot") {
+    if (truck.loads < FIGHT.truckLoads) truck.reload = FIGHT.truckReload;
+    return;
+  }
+  if (truck.loads <= 0) {
+    pushLog(state, "The truck is empty. Send it back to the depot.");
+    return;
+  }
+  const crew = state.crews.find((c) => Math.round(c.x) === here.x && Math.round(c.y) === here.y);
+  if (crew) {
+    truck.loads -= 1;
+    crew.kits = Math.min(2, crew.kits + 1);
+    pushLog(state, `${crew.name} has a fresh bag load.`);
+    return;
+  }
+  if (here.wall && !here.wall.breached) {
+    truck.loads -= 1;
+    const add = here.wall.maxHp * FIGHT.truckHeal;
+    here.wall.hp = Math.min(here.wall.maxHp, here.wall.hp + add);
+    pushLog(state, `Sandbags are on the wall at ${here.label}.`);
+    return;
+  }
+  if (here.wall?.breached) {
+    pushLog(state, "That wall has already given way. A crew has to rebuild it.");
+    return;
+  }
+  pushLog(state, "Nothing here to deliver to. Send the truck to a levee, a crew, or the depot.");
 }
 
 function maybeEnd(state: GameState) {
@@ -1151,6 +1546,9 @@ export function step(state: GameState, dt: number) {
   tickMoves(state, dt);
   failures(state, dt);
   tickCrews(state, dt);
+  tickRescue(state, dt);
+  tickBoat(state, dt);
+  tickTruck(state, dt);
   const depth = gaugeDepth(state);
   state.peakDepth = Math.max(state.peakDepth, depth);
   const feet = toFeet(depth, state);
@@ -1203,7 +1601,11 @@ function uniqueAssets(cells: Cell[]) {
 export function scoreGame(state: GameState, mission: MissionDef): Scorecard {
   const popCells = state.cells.filter((c) => c.pop > 0);
   const popTotal = popCells.reduce((s, c) => s + c.pop, 0);
-  const popSaved = popCells.filter((c) => !c.failed).reduce((s, c) => s + c.pop, 0);
+  const popSaved = popCells.reduce((s, c) => {
+    if (!c.failed) return s + c.pop;
+    return s + (state.rescuedFrom[`${c.x},${c.y}`] ?? 0);
+  }, 0);
+  const rescued = state.rescued;
   const farms = state.cells.filter((c) => c.kind === "farm");
   const farmsLost = farms.filter((c) => c.failed || c.peak > 0.7).length;
   const crit = state.cells.filter((c) => c.kind === "town" || c.kind === "hospital" || c.kind === "lock");
@@ -1255,6 +1657,9 @@ export function scoreGame(state: GameState, mission: MissionDef): Scorecard {
   } else if (!mission.sacrificialFarms && frac <= 0.05 && (letter === "A" || letter === "B")) {
     lines.push("You held the flood without giving the fields to the river.");
   }
+  if (rescued > 0) {
+    lines.push(rescued === 1 ? "You pulled 1 person off the roofs." : `You pulled ${rescued.toLocaleString()} people off the roofs.`);
+  }
   if (state.breaches > 0) {
     lines.push(
       state.breaches === 1 ? "One breach opened in the line." : `${state.breaches} breaches opened in the line.`,
@@ -1280,6 +1685,7 @@ export function scoreGame(state: GameState, mission: MissionDef): Scorecard {
     peakFeet,
     spillSeconds: state.spillSeconds,
     spillFraction: frac,
+    rescued,
   };
 }
 

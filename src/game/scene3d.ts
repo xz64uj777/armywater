@@ -217,6 +217,13 @@ export class Relief {
   private leaks: THREE.Group[] = [];
   private plugRings: { timer: THREE.Mesh; fill: THREE.Mesh }[] = [];
   private ndcScreen = new THREE.Vector3();
+  private boat: THREE.Group;
+  private truck: THREE.Group;
+  private people: THREE.Group[] = [];
+  private riders: THREE.Mesh[] = [];
+  private routeDots: THREE.Mesh[] = [];
+  private helmRing: THREE.Mesh;
+  private bags: THREE.Mesh;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
@@ -367,6 +374,49 @@ export class Relief {
       this.scene.add(timer, fill);
       this.plugRings.push({ timer, fill });
     }
+
+    this.boat = makeBoat();
+    this.boat.visible = false;
+    this.scene.add(this.boat);
+    for (let i = 0; i < 3; i++) {
+      const rider = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.035, 0.04, 0.11, 5),
+        new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.8 }),
+      );
+      rider.position.set(-0.04 + i * 0.07, 0.12, i === 1 ? 0.04 : -0.03);
+      rider.visible = false;
+      this.riders.push(rider);
+      this.boat.add(rider);
+    }
+
+    this.truck = makeTruck();
+    this.truck.visible = false;
+    this.bags = this.truck.getObjectByName("bags") as THREE.Mesh;
+    this.scene.add(this.truck);
+
+    for (let i = 0; i < 16; i++) {
+      const g = makePeople();
+      g.visible = false;
+      this.people.push(g);
+      this.scene.add(g);
+    }
+    for (let i = 0; i < 14; i++) {
+      const dot = new THREE.Mesh(
+        new THREE.CircleGeometry(0.09, 8),
+        new THREE.MeshBasicMaterial({ color: 0x1b2418, transparent: true, opacity: 0.55, depthWrite: false }),
+      );
+      dot.rotation.x = -Math.PI / 2;
+      dot.visible = false;
+      this.routeDots.push(dot);
+      this.scene.add(dot);
+    }
+    this.helmRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.34, 0.035, 6, 20),
+      new THREE.MeshBasicMaterial({ color: SCARLET, transparent: true, opacity: 0.85, depthWrite: false }),
+    );
+    this.helmRing.rotation.x = Math.PI / 2;
+    this.helmRing.visible = false;
+    this.scene.add(this.helmRing);
   }
 
   resize(w: number, h: number, dpr: number) {
@@ -392,6 +442,47 @@ export class Relief {
 
   pickAt(x: number, y: number) {
     return this.pick(x, y);
+  }
+
+  pickPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return null;
+    this.ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    this.ray.setFromCamera(this.ndc, this.camera);
+    const hits = this.terrain ? this.ray.intersectObject(this.terrain, false) : [];
+    const point = hits[0]?.point;
+    if (!point) return null;
+    return {
+      x: Math.min(this.cols - 0.05, Math.max(0.05, point.x)),
+      y: Math.min(this.rows - 0.05, Math.max(0.05, point.z)),
+    };
+  }
+
+  hitVehicle(state: GameState, clientX: number, clientY: number): "boat" | "truck" | null {
+    if (state.mode !== "fight" || state.ended) return null;
+    let best: "boat" | "truck" | null = null;
+    let bd = 22;
+    const by = this.surfaceY(state, state.boat.x, state.boat.y);
+    const bp = this.project(new THREE.Vector3(state.boat.x, by + 0.1, state.boat.y));
+    if (bp) {
+      const d = Math.hypot(bp.x - clientX, bp.y - clientY);
+      if (d < bd) {
+        bd = d;
+        best = "boat";
+      }
+    }
+    const tx = state.truck.x + 0.5;
+    const tz = state.truck.y + 0.5;
+    const ty = this.surfaceY(state, tx, tz);
+    const tp = this.project(new THREE.Vector3(tx, ty + 0.14, tz));
+    if (tp) {
+      const d = Math.hypot(tp.x - clientX, tp.y - clientY);
+      if (d < bd) {
+        bd = d;
+        best = "truck";
+      }
+    }
+    return best;
   }
 
   zoom(delta: number) {
@@ -856,6 +947,7 @@ export class Relief {
       mesh.rotation.y = fx.phase * 0.4 + crew.id;
     });
 
+    this.syncVehicles(state, fx);
     this.syncLeaks(state, fx.phase);
     this.syncPlugs(state);
 
@@ -1051,6 +1143,82 @@ export class Relief {
     this.burstLife = 1;
   }
 
+  private surfaceY(state: GameState, x: number, y: number): number {
+    const cx = Math.min(this.cols - 1, Math.max(0, Math.floor(x)));
+    const cy = Math.min(this.rows - 1, Math.max(0, Math.floor(y)));
+    const cell = state.cells[cy * this.cols + cx];
+    if (!cell) return 0.2;
+    const wl = waterLine(cell);
+    if (wl != null) return wl;
+    return this.parcels[cy * this.cols + cx]?.y ?? groundHeight(cell);
+  }
+
+  private syncVehicles(state: GameState, fx: Fx) {
+    const fight = state.mode === "fight" || state.mode === "done";
+    const boat = state.boat;
+    this.boat.visible = Boolean(fight && boat?.launched);
+    if (this.boat.visible) {
+      const y = this.surfaceY(state, boat.x, boat.y);
+      const bob = Math.sin(fx.phase * 4.2) * 0.02;
+      this.boat.position.set(boat.x, y + 0.05 + bob, boat.y);
+      this.boat.rotation.y = -boat.heading;
+      for (const rider of this.riders) rider.visible = boat.carry > 0;
+    }
+
+    const truck = state.truck;
+    this.truck.visible = Boolean(fight && truck);
+    if (this.truck.visible) {
+      const x = truck.x + 0.5;
+      const z = truck.y + 0.5;
+      const y = this.surfaceY(state, x, z);
+      this.truck.position.set(x, y + 0.07, z);
+      this.truck.rotation.y = -truck.heading;
+      if (this.bags) this.bags.visible = truck.loads > 0;
+    }
+
+    for (let i = 0; i < this.people.length; i++) {
+      const group = this.people[i];
+      const p = state.stranded[i];
+      if (!fight || !p) {
+        group.visible = false;
+        continue;
+      }
+      const cell = state.cells[p.y * this.cols + p.x];
+      const ground = (this.parcels[p.y * this.cols + p.x]?.y ?? 0.25) + 0.42;
+      const water = cell ? waterLine(cell) : null;
+      const y = Math.max(ground, (water ?? ground) + 0.1);
+      group.visible = true;
+      group.position.set(p.x + 0.5 + p.ox, y, p.y + 0.5 + p.oz);
+      group.rotation.y = fx.phase * 0.3 + p.id;
+    }
+
+    const showRoute = Boolean(fight && truck?.path.length);
+    for (let i = 0; i < this.routeDots.length; i++) {
+      const dot = this.routeDots[i];
+      const step = truck?.path[i];
+      if (!showRoute || !step) {
+        dot.visible = false;
+        continue;
+      }
+      const y = this.surfaceY(state, step.x + 0.5, step.y + 0.5);
+      dot.visible = true;
+      dot.position.set(step.x + 0.5, y + 0.04, step.y + 0.5);
+    }
+
+    const helm = fx.helm;
+    if (fight && helm === "boat" && this.boat.visible) {
+      this.helmRing.visible = true;
+      this.helmRing.position.copy(this.boat.position);
+      this.helmRing.position.y += 0.02;
+    } else if (fight && helm === "truck" && this.truck.visible) {
+      this.helmRing.visible = true;
+      this.helmRing.position.copy(this.truck.position);
+      this.helmRing.position.y += 0.02;
+    } else {
+      this.helmRing.visible = false;
+    }
+  }
+
   render() {
     this.renderer.render(this.scene, this.camera);
   }
@@ -1059,4 +1227,65 @@ export class Relief {
     this.renderer.dispose();
     this.pointers.clear();
   }
+}
+
+
+function makeBoat(): THREE.Group {
+  const g = new THREE.Group();
+  const hull = new THREE.Mesh(
+    new THREE.BoxGeometry(0.44, 0.07, 0.18),
+    new THREE.MeshStandardMaterial({ color: 0x2a3a32, roughness: 0.55 }),
+  );
+  hull.castShadow = true;
+  const prow = new THREE.Mesh(
+    new THREE.ConeGeometry(0.1, 0.16, 4),
+    new THREE.MeshStandardMaterial({ color: 0x2a3a32, roughness: 0.55 }),
+  );
+  prow.rotation.z = -Math.PI / 2;
+  prow.position.x = 0.26;
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.1, 0.12),
+    new THREE.MeshStandardMaterial({ color: 0xd8c7a4, roughness: 0.7 }),
+  );
+  cabin.position.set(-0.06, 0.08, 0);
+  g.add(hull, prow, cabin);
+  return g;
+}
+
+function makeTruck(): THREE.Group {
+  const g = new THREE.Group();
+  const bed = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.08, 0.18),
+    new THREE.MeshStandardMaterial({ color: 0x3d4a38, roughness: 0.65 }),
+  );
+  bed.position.set(-0.04, 0.04, 0);
+  bed.castShadow = true;
+  const cab = new THREE.Mesh(
+    new THREE.BoxGeometry(0.14, 0.14, 0.16),
+    new THREE.MeshStandardMaterial({ color: 0x8a2a1e, roughness: 0.55 }),
+  );
+  cab.position.set(0.16, 0.1, 0);
+  cab.castShadow = true;
+  const bags = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 0.08, 0.14),
+    new THREE.MeshStandardMaterial({ color: 0xb3873e, roughness: 0.8 }),
+  );
+  bags.position.set(-0.06, 0.12, 0);
+  bags.name = "bags";
+  g.add(bed, cab, bags);
+  return g;
+}
+
+function makePeople(): THREE.Group {
+  const g = new THREE.Group();
+  const colors = [0x3a2a1c, 0x5a3a28, 0x2c2420];
+  for (let i = 0; i < 3; i++) {
+    const fig = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.035, 0.04, 0.12, 5),
+      new THREE.MeshStandardMaterial({ color: colors[i], roughness: 0.85 }),
+    );
+    fig.position.set((i - 1) * 0.07, 0.06, (i % 2 === 0 ? -0.03 : 0.03));
+    g.add(fig);
+  }
+  return g;
 }
