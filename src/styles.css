@@ -1,0 +1,41 @@
+@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,460;8..60,620&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #e4d5b8;
+  --color-paper-2: #d3c19a;
+  --color-ink: #1b2418;
+  --color-muted: #5c5648;
+  --color-scarlet: #9d1c1c;
+  --color-river: #1e5c7a;
+  --color-sand: #c6a36a;
+  --color-foam: #e7f1f4;
+  --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --radius-sm: 2px;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-serif);
+    min-height: 100%;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-scarlet);
+    outline-offset: 2px;
+  }
+}
+
+@utility paper-tooth {
+  background-image: radial-gradient(var(--color-ink) 0.55px, transparent 0.55px);
+  background-size: 4px 4px;
+}
